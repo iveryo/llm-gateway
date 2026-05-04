@@ -8,11 +8,11 @@
     "dev": "npm run build && electron .",
     "build": "tsc -p tsconfig.main.json && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.main.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dist:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.4",
-    "electron": "^39.2.6",
     "lucide-react": "^0.552.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -23,7 +23,20 @@
     "@types/node": "^24.9.1",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
+    "electron-builder": "^26.8.1",
+    "electron": "^39.2.6",
     "typescript": "^5.9.3",
     "vitest": "^4.0.7"
+  },
+  "build": {
+    "appId": "com.llm.gateway",
+    "productName": "LLM Gateway",
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    }
   }
 }
