@@ -1,0 +1,430 @@
+:root {
+  color: #1f2933;
+  background: #f4f7f8;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-right: 1px solid #d8e0e3;
+  background: #ffffff;
+  min-width: 0;
+  min-height: 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+.topActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+p {
+  margin: 4px 0 0;
+  color: #63717a;
+}
+
+.iconButton {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #cad5da;
+  border-radius: 6px;
+  background: #fff;
+  color: #31404a;
+  cursor: pointer;
+}
+
+.dangerIcon {
+  color: #9f1f16;
+  background: #fff8f7;
+  border-color: #efc9c4;
+}
+
+.searchBox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #cad5da;
+  border-radius: 6px;
+  padding: 8px 10px;
+  flex: 0 0 auto;
+}
+
+.searchBox input,
+.formGrid input,
+.secret input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  min-width: 0;
+}
+
+.logList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding-right: 2px;
+}
+
+.logItem {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  text-align: left;
+  border: 1px solid #dbe4e8;
+  background: #fbfcfc;
+  border-radius: 6px;
+  padding: 10px;
+  cursor: pointer;
+}
+
+.logItem.active {
+  border-color: #23747c;
+  background: #eef8f8;
+}
+
+.logItem strong,
+.logItem small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logItem small {
+  color: #697982;
+}
+
+.status {
+  grid-row: span 3;
+  align-self: start;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  overflow: hidden;
+  text-indent: -999px;
+  background: #9aa7ad;
+}
+
+.status.ok {
+  background: #15803d;
+}
+
+.status.error {
+  background: #b42318;
+}
+
+.danger,
+.primary,
+.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 38px;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.danger {
+  background: #fff1f0;
+  color: #9f1f16;
+}
+
+.primary {
+  width: max-content;
+  min-width: 220px;
+  background: #23747c;
+  color: white;
+  padding: 0 16px;
+}
+
+.secondary {
+  background: #ffffff;
+  border: 1px solid #cad5da;
+  color: #31404a;
+  padding: 0 12px;
+}
+
+.workspace {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 12px 18px;
+  border-bottom: 1px solid #d8e0e3;
+  background: #ffffff;
+}
+
+.tabs button {
+  border: 0;
+  background: transparent;
+  color: #52616b;
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.tabs button.selected {
+  background: #e6f2f2;
+  color: #145d65;
+}
+
+.content {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  padding: 18px;
+  gap: 14px;
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.summary div {
+  padding: 10px;
+  border: 1px solid #d8e0e3;
+  border-radius: 6px;
+  background: #ffffff;
+  min-width: 0;
+}
+
+.summary .wide {
+  grid-column: span 2;
+}
+
+.summary label,
+.configPanel label {
+  display: block;
+  font-size: 12px;
+  color: #64727b;
+  margin-bottom: 5px;
+}
+
+.summary strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.summary .error {
+  color: #b42318;
+}
+
+.summary .ok {
+  color: #15803d;
+}
+
+.jsonPanel {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #d8e0e3;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 14px;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+}
+
+.empty {
+  color: #6b7a83;
+}
+
+.jsonNode {
+  line-height: 1.6;
+}
+
+.jsonChildren {
+  margin-left: 18px;
+  border-left: 1px solid #e3eaed;
+  padding-left: 10px;
+}
+
+.twisty {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  color: #33424c;
+}
+
+.jsonKey {
+  color: #0b6770;
+  font-weight: 600;
+}
+
+.jsonValue {
+  color: #5b2a86;
+  overflow-wrap: anywhere;
+}
+
+.jsonLine {
+  position: relative;
+  min-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.jsonLine.match {
+  background: #fff8d6;
+}
+
+.copy {
+  margin-left: 8px;
+  border: 0;
+  background: transparent;
+  color: #60717b;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.configPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 0 18px 18px;
+  overflow: auto;
+}
+
+.configHeader {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+  padding: 18px 0 0;
+  background: #f4f7f8;
+}
+
+.fileInput {
+  display: none;
+}
+
+.configError {
+  max-width: min(620px, 100%);
+  border: 1px solid #efc9c4;
+  border-radius: 6px;
+  background: #fff8f7;
+  color: #9f1f16;
+  padding: 8px 10px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  max-width: 980px;
+}
+
+.formGrid label,
+.mapping {
+  border: 1px solid #d8e0e3;
+  background: #ffffff;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.secret span {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.check {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  margin: 0 !important;
+}
+
+.check input {
+  width: auto;
+}
+
+.mapping {
+  max-width: 980px;
+}
+
+.mapping textarea {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  border: 0;
+  outline: 0;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: 280px 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #d8e0e3;
+    min-height: 0;
+  }
+
+  .summary,
+  .formGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .summary .wide {
+    grid-column: span 1;
+  }
+}
