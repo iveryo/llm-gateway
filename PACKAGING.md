@@ -1,30 +1,32 @@
-# Windows exe 打包说明
+# Windows exe Packaging
 
-本项目是 Electron + Vite + React 应用，可以使用 `electron-builder` 打包成 Windows `.exe`。
+[English](PACKAGING.md) | [简体中文](PACKAGING.zh-CN.md)
 
-## 1. 安装依赖
+This project is an Electron + Vite + React app. It can be packaged as a Windows `.exe` with `electron-builder`.
 
-如果还没有安装项目依赖，先执行：
+## 1. Install Dependencies
+
+If project dependencies are not installed yet, run:
 
 ```powershell
 npm install
 ```
 
-安装 Electron 打包工具：
+Install the Electron packaging tool if it is not already present:
 
 ```powershell
 npm install --save-dev electron-builder
 ```
 
-## 2. 配置 package.json
+## 2. Configure package.json
 
-在 `package.json` 的 `scripts` 中增加打包命令：
+Add the packaging command to `scripts`:
 
 ```json
 "dist:win": "npm run build && electron-builder --win"
 ```
 
-完整的 `scripts` 示例：
+Example `scripts` section:
 
 ```json
 "scripts": {
@@ -36,7 +38,7 @@ npm install --save-dev electron-builder
 }
 ```
 
-然后在 `package.json` 根级增加 `build` 配置：
+Add a top-level `build` config in `package.json`:
 
 ```json
 "build": {
@@ -52,25 +54,25 @@ npm install --save-dev electron-builder
 }
 ```
 
-`nsis` 会生成 Windows 安装包。
+`nsis` generates a Windows installer.
 
-## 3. 生成安装版 exe
+## 3. Build The Installer exe
 
-执行：
+Run:
 
 ```powershell
 npm run dist:win
 ```
 
-打包完成后，生成文件通常在：
+After packaging, the generated file is usually in:
 
 ```text
 dist\LLM Gateway Setup 0.1.0.exe
 ```
 
-## 4. 生成免安装版 exe
+## 4. Build A Portable exe
 
-如果想生成免安装版，把 `package.json` 中的 `win.target` 改成：
+To generate a portable executable, change `win.target` in `package.json`:
 
 ```json
 "win": {
@@ -78,35 +80,37 @@ dist\LLM Gateway Setup 0.1.0.exe
 }
 ```
 
-然后重新执行：
+Then run again:
 
 ```powershell
 npm run dist:win
 ```
 
-生成文件通常在：
+The generated file is usually in:
 
 ```text
 dist\LLM Gateway 0.1.0.exe
 ```
 
-## 5. 常见问题
+## 5. Common Issues
 
-### electron-builder 命令不存在
+### electron-builder command not found
 
-确认已经执行：
+Make sure you have run:
 
 ```powershell
 npm install --save-dev electron-builder
 ```
 
-也可以用下面的方式直接运行本地依赖：
+You can also run the local dependency directly:
 
 ```powershell
 npx electron-builder --win
 ```
 
-### 打包前建议先检查
+### Check before packaging
+
+Before packaging, run:
 
 ```powershell
 npm run typecheck
@@ -114,18 +118,18 @@ npm test
 npm run build
 ```
 
-如果这些命令都通过，再执行：
+If all commands pass, run:
 
 ```powershell
 npm run dist:win
 ```
 
-### PowerShell 提示脚本执行策略错误
+### PowerShell execution policy warning
 
-如果 PowerShell 出现类似 `无法加载文件 ... Microsoft.PowerShell_profile.ps1` 的提示，通常不影响 npm 命令执行。也可以用不加载配置文件的方式运行：
+If PowerShell prints a warning such as `cannot be loaded ... Microsoft.PowerShell_profile.ps1`, it usually does not block npm commands. You can also start PowerShell without loading the profile:
 
 ```powershell
 powershell -NoProfile
 ```
 
-然后在新打开的 PowerShell 中重新执行打包命令。
+Then run the packaging command again in the new PowerShell window.

@@ -1,8 +1,12 @@
 # LLM Gateway
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 LLM Gateway is a local Electron app that lets Claude Code call OpenAI-compatible providers through the Anthropic Messages API shape.
 
 It receives Claude/Anthropic requests on `POST /v1/messages`, converts them to OpenAI Chat Completions requests, sends them to the configured provider, then converts the response back to Anthropic format. The app also shows request/response logs so you can inspect routing, payloads, errors, and streaming events.
+
+![LLM Gateway home screen](docs/assets/home.png)
 
 ## What It Is For
 
@@ -12,6 +16,9 @@ It receives Claude/Anthropic requests on `POST /v1/messages`, converts them to O
 - Configure per-provider base URL, API key, optional concurrency limit, and model notes.
 - Import/export configuration as JSON.
 - Inspect Anthropic request, provider request, provider response, Anthropic response, and SSE stream logs.
+- Pause or resume local request logging from the sidebar.
+- Review usage statistics by hour, day, or month, grouped by provider, provider model, or Claude model.
+- Switch the interface between English, Chinese, or automatic language detection.
 
 ## Install
 
@@ -164,6 +171,17 @@ For each request, the app records:
 
 Sensitive fields such as authorization headers and API keys are redacted when `Redact sensitive fields` is enabled.
 
+## Usage Stats
+
+The Stats tab summarizes completed requests.
+
+You can choose:
+
+- Granularity: hour, day, or month.
+- Grouping: provider, provider model, or Claude model.
+
+The table includes request counts, success/error counts, streaming counts, input/output token totals, total tokens, average latency, and average queue wait time. Streaming OpenAI-compatible requests include `stream_options.include_usage` so providers that support usage chunks can report token usage.
+
 ## Development Commands
 
 ```powershell
@@ -180,7 +198,7 @@ npm run dev
 
 ## Package For Windows
 
-This project can be packaged with Electron tooling. See `PACKAGING.md` for Windows `.exe` packaging notes.
+This project can be packaged with Electron tooling. See [PACKAGING.md](PACKAGING.md) for Windows `.exe` packaging notes.
 
 ## Notes
 
