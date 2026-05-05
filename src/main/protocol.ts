@@ -57,6 +57,10 @@ export function anthropicToOpenAI(body: AnthropicRequest, config: GatewayConfig)
     stream: Boolean(body.stream)
   };
 
+  if (body.stream) {
+    request.stream_options = { include_usage: true };
+  }
+
   if (body.tools?.length) {
     request.tools = body.tools.map((tool) => ({
       type: "function",

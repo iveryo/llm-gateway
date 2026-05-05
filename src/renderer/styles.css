@@ -14,7 +14,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -44,10 +45,19 @@ textarea {
   flex: 0 0 auto;
 }
 
+.logToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
 .topActions {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
 }
 
 h1 {
@@ -76,6 +86,39 @@ p {
   color: #9f1f16;
   background: #fff8f7;
   border-color: #efc9c4;
+}
+
+.recordToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 34px;
+  min-width: 128px;
+  border: 1px solid #cad5da;
+  border-radius: 6px;
+  padding: 0 12px;
+  background: #ffffff;
+  color: #31404a;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.recordToggle.recording {
+  border-color: #0f8f4a;
+  background: #e7f8ed;
+  color: #0b6f39;
+}
+
+.recordToggle.paused {
+  border-color: #d6a64c;
+  background: #fff8e6;
+  color: #8a5a00;
+}
+
+.recordToggle:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .searchBox {
@@ -197,10 +240,19 @@ p {
 
 .tabs {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 4px;
   padding: 12px 18px;
   border-bottom: 1px solid #d8e0e3;
   background: #ffffff;
+}
+
+.tabGroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 
 .tabs button {
@@ -217,12 +269,141 @@ p {
   color: #145d65;
 }
 
+.languageSelect {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  border: 1px solid #cad5da;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #52616b;
+  padding: 0 8px;
+  flex: 0 0 auto;
+}
+
+.languageSelect select {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #31404a;
+  cursor: pointer;
+}
+
 .content {
   display: grid;
   grid-template-rows: auto 1fr;
   min-height: 0;
   padding: 18px;
   gap: 14px;
+}
+
+.statsPanel {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  min-height: 0;
+  padding: 18px;
+  gap: 14px;
+}
+
+.statsToolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid #cad5da;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.segmented button {
+  min-width: 72px;
+  height: 36px;
+  border: 0;
+  border-right: 1px solid #d8e0e3;
+  background: transparent;
+  color: #52616b;
+  cursor: pointer;
+}
+
+.segmented button:last-child {
+  border-right: 0;
+}
+
+.segmented button.selected {
+  background: #e6f2f2;
+  color: #145d65;
+  font-weight: 700;
+}
+
+.statsToolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #64727b;
+  font-size: 13px;
+}
+
+.statsToolbar select {
+  height: 36px;
+  border: 1px solid #cad5da;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #31404a;
+  padding: 0 10px;
+}
+
+.statsSummary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.statsTableWrap {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #d8e0e3;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.statsTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.statsTable th,
+.statsTable td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e3eaed;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.statsTable th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fbfb;
+  color: #52616b;
+  font-weight: 700;
+}
+
+.statsTable th:first-child,
+.statsTable th:nth-child(2),
+.statsTable td:first-child,
+.statsTable td:nth-child(2) {
+  text-align: left;
+}
+
+.statsTable td:nth-child(2) {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .summary {
@@ -329,7 +510,7 @@ p {
 .configPanel {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   padding: 0 18px 18px;
   overflow: auto;
 }
@@ -341,9 +522,39 @@ p {
   display: flex;
   align-items: center;
   gap: 12px;
-  justify-content: flex-end;
-  padding: 18px 0 0;
+  justify-content: space-between;
+  padding: 16px 0 12px;
   background: #f4f7f8;
+}
+
+.configTitle {
+  min-width: 0;
+  margin-right: auto;
+}
+
+.configTitle h2,
+.sectionIntro h3 {
+  margin: 0;
+  color: #1f2933;
+}
+
+.configTitle h2 {
+  font-size: 20px;
+}
+
+.configTitle p,
+.sectionIntro p {
+  margin: 4px 0 0;
+  color: #64727b;
+  font-size: 13px;
+}
+
+.configActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .fileInput {
@@ -361,11 +572,38 @@ p {
   overflow-wrap: anywhere;
 }
 
+.configSection {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  max-width: 1180px;
+}
+
+.configSection.wideSection {
+  grid-template-columns: 1fr;
+  max-width: none;
+}
+
+.configSection.wideSection .sectionIntro {
+  position: static;
+  max-width: 760px;
+}
+
+.sectionIntro {
+  position: sticky;
+  top: 84px;
+  padding: 2px 0;
+}
+
+.sectionIntro h3 {
+  font-size: 15px;
+}
+
 .formGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
-  max-width: 980px;
 }
 
 .formGrid label,
@@ -394,17 +632,24 @@ p {
 }
 
 .mapping {
-  max-width: 980px;
+  min-width: 0;
 }
 
 .mapping textarea {
   width: 100%;
-  min-height: 220px;
+  min-height: 420px;
   resize: vertical;
   border: 0;
   outline: 0;
   font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   font-size: 13px;
+}
+
+.editorGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(360px, 1fr));
+  gap: 14px;
+  min-width: 0;
 }
 
 @media (max-width: 900px) {
@@ -420,11 +665,47 @@ p {
   }
 
   .summary,
+  .statsSummary,
   .formGrid {
     grid-template-columns: 1fr;
   }
 
   .summary .wide {
     grid-column: span 1;
+  }
+
+  .statsToolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .tabs {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .tabGroup {
+    flex-wrap: wrap;
+  }
+
+  .configHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .configActions {
+    justify-content: flex-start;
+  }
+
+  .configSection {
+    grid-template-columns: 1fr;
+  }
+
+  .sectionIntro {
+    position: static;
+  }
+
+  .editorGrid {
+    grid-template-columns: 1fr;
   }
 }

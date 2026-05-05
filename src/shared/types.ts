@@ -22,6 +22,7 @@ export type GatewayConfig = {
   modelMappings: Record<string, ModelMapping>;
   requestTimeoutMs: number;
   redactSensitive: boolean;
+  loggingEnabled: boolean;
 };
 
 export type LogStatus = "pending" | "ok" | "error";
@@ -50,11 +51,30 @@ export type LogEntry = {
   streamEvents?: unknown[];
 };
 
+export type StatsGranularity = "hour" | "day" | "month";
+
+export type StatsGroupBy = "provider" | "providerModel" | "anthropicModel";
+
+export type UsageStatsRow = {
+  bucket: string;
+  groupKey: string;
+  requestCount: number;
+  successCount: number;
+  errorCount: number;
+  streamCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  avgDurationMs: number;
+  avgQueueWaitMs: number;
+};
+
 export type RendererApi = {
   getConfig: () => Promise<GatewayConfig>;
   saveConfig: (config: GatewayConfig) => Promise<GatewayConfig>;
   getLogs: () => Promise<LogEntry[]>;
   getLog: (id: string) => Promise<LogEntry | undefined>;
+  getStats: (granularity: StatsGranularity, groupBy: StatsGroupBy) => Promise<UsageStatsRow[]>;
   clearLogs: () => Promise<void>;
   onLogUpdated: (listener: (entry: LogEntry) => void) => () => void;
 };
@@ -77,5 +97,6 @@ export const DEFAULT_CONFIG: GatewayConfig = {
     "claude-sonnet-4-5": { provider: "openai", model: "gpt-4o" }
   },
   requestTimeoutMs: 120000,
-  redactSensitive: true
+  redactSensitive: true,
+  loggingEnabled: true
 };

@@ -40,6 +40,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("logs:list", () => logStore.list());
   ipcMain.handle("logs:get", (_event, id: string) => logStore.get(id));
+  ipcMain.handle("stats:list", (_event, granularity, groupBy) => logStore.stats(granularity, groupBy));
   ipcMain.handle("logs:clear", () => logStore.clear());
 
   await gateway.restart();

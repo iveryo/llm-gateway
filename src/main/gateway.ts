@@ -79,13 +79,13 @@ export class GatewayServer {
       anthropicRequest: config.redactSensitive ? redact(anthropicRequest) : anthropicRequest,
       providerRequest: config.redactSensitive ? redact(converted.request) : converted.request
     };
-    this.saveAndNotify(log);
+    this.saveAndNotify(log, config);
 
     const started = Date.now();
     try {
       const queued = await this.queueFor(converted.providerId, provider).run(() => this.callProvider(config, provider, converted.request));
       log.queueWaitMs = queued.waitMs;
-      this.saveAndNotify(log);
+      this.saveAndNotify(log, config);
       const providerResponse = queued.value;
       const text = await providerResponse.text();
       log.statusCode = providerResponse.status;
@@ -95,7 +95,7 @@ export class GatewayServer {
         log.status = "error";
         log.error = providerErrorMessage(errorBody, providerResponse.statusText);
         log.providerResponse = config.redactSensitive ? redact(errorBody) : errorBody;
-        this.finish(log, started);
+        this.finish(log, started, config);
         this.writeError(res, providerResponse.status, "api_error", log.error);
         return;
       }
@@ -110,7 +110,7 @@ export class GatewayServer {
         log.streamEvents = config.redactSensitive ? (redact(events) as unknown[]) : events;
         log.providerResponse = config.redactSensitive ? redact({ json: providerJson, sse: lines }) : { json: providerJson, sse: lines };
         log.anthropicResponse = config.redactSensitive ? redact({ json: anthropicResponse, sse: events }) : { json: anthropicResponse, sse: events };
-        this.finish(log, started);
+        this.finish(log, started, config);
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache",
@@ -123,14 +123,14 @@ export class GatewayServer {
         log.status = "ok";
         log.providerResponse = config.redactSensitive ? redact(providerJson) : providerJson;
         log.anthropicResponse = config.redactSensitive ? redact(anthropicResponse) : anthropicResponse;
-        this.finish(log, started);
+        this.finish(log, started, config);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(anthropicResponse));
       }
     } catch (error) {
       log.status = "error";
       log.error = error instanceof Error ? error.message : String(error);
-      this.finish(log, started);
+      this.finish(log, started, config);
       this.writeError(res, 502, "api_error", log.error);
     }
   }
@@ -177,13 +177,14 @@ export class GatewayServer {
     return token === config.localToken || apiKey === config.localToken;
   }
 
-  private finish(log: LogEntry, started: number): void {
+  private finish(log: LogEntry, started: number, config: GatewayConfig): void {
     log.completedAt = new Date().toISOString();
     log.durationMs = Date.now() - started;
-    this.saveAndNotify(log);
+    this.saveAndNotify(log, config);
   }
 
-  private saveAndNotify(log: LogEntry): void {
+  private saveAndNotify(log: LogEntry, config: GatewayConfig): void {
+    if (!config.loggingEnabled) return;
     this.logStore.upsert(log);
     this.getWindow()?.webContents.send("log-updated", log);
   }

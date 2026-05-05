@@ -62,7 +62,8 @@ function normalizeConfig(config: GatewayConfig): GatewayConfig {
     defaultModel: config.defaultModel || DEFAULT_CONFIG.defaultModel,
     modelMappings,
     requestTimeoutMs: Number(config.requestTimeoutMs) || DEFAULT_CONFIG.requestTimeoutMs,
-    redactSensitive: Boolean(config.redactSensitive)
+    redactSensitive: Boolean(config.redactSensitive),
+    loggingEnabled: config.loggingEnabled !== false
   };
 }
 
