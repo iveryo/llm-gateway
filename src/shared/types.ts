@@ -1,8 +1,11 @@
 export type HeaderMap = Record<string, string | string[] | undefined>;
 
+export type LlmProtocol = "openai" | "anthropic";
+
 export type ProviderConfig = {
   baseUrl: string;
   apiKey: string;
+  protocol: LlmProtocol;
   concurrency?: number;
   model_list?: string[];
 };
@@ -27,6 +30,17 @@ export type GatewayConfig = {
 
 export type LogStatus = "pending" | "ok" | "error";
 
+export type GatewayRuntimeState = "starting" | "running" | "stopped" | "error";
+
+export type GatewayStatus = {
+  state: GatewayRuntimeState;
+  host: string;
+  port: number;
+  url: string;
+  message?: string;
+  updatedAt: string;
+};
+
 export type LogEntry = {
   id: string;
   startedAt: string;
@@ -36,6 +50,9 @@ export type LogEntry = {
   path: string;
   status: LogStatus;
   statusCode?: number;
+  clientProtocol?: LlmProtocol;
+  providerProtocol?: LlmProtocol;
+  clientModel?: string;
   anthropicModel?: string;
   providerId?: string;
   providerModel?: string;
@@ -44,16 +61,22 @@ export type LogEntry = {
   warning?: string;
   error?: string;
   requestHeaders?: unknown;
+  clientRequest?: unknown;
+  clientResponse?: unknown;
+  clientRequestRaw?: string;
+  clientResponseRaw?: string;
   anthropicRequest?: unknown;
   providerRequest?: unknown;
   providerResponse?: unknown;
+  providerRequestRaw?: string;
+  providerResponseRaw?: string;
   anthropicResponse?: unknown;
   streamEvents?: unknown[];
 };
 
 export type StatsGranularity = "hour" | "day" | "month";
 
-export type StatsGroupBy = "provider" | "providerModel" | "anthropicModel";
+export type StatsGroupBy = "provider" | "providerModel" | "clientModel" | "clientProtocol" | "providerProtocol" | "anthropicModel";
 
 export type UsageStatsRow = {
   bucket: string;
@@ -72,11 +95,13 @@ export type UsageStatsRow = {
 export type RendererApi = {
   getConfig: () => Promise<GatewayConfig>;
   saveConfig: (config: GatewayConfig) => Promise<GatewayConfig>;
+  getGatewayStatus: () => Promise<GatewayStatus>;
   getLogs: () => Promise<LogEntry[]>;
   getLog: (id: string) => Promise<LogEntry | undefined>;
   getStats: (granularity: StatsGranularity, groupBy: StatsGroupBy) => Promise<UsageStatsRow[]>;
   clearLogs: () => Promise<void>;
   onLogUpdated: (listener: (entry: LogEntry) => void) => () => void;
+  onGatewayStatusUpdated: (listener: (status: GatewayStatus) => void) => () => void;
 };
 
 export const DEFAULT_CONFIG: GatewayConfig = {
@@ -86,6 +111,7 @@ export const DEFAULT_CONFIG: GatewayConfig = {
   defaultProvider: "openai",
   providers: {
     openai: {
+      protocol: "openai",
       baseUrl: "https://api.openai.com",
       apiKey: "",
       model_list: ["gpt-4o", "gpt-4o-mini"]

@@ -27,7 +27,7 @@ export class LogStore {
     this.migrate();
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_logs_started_at ON logs(started_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_logs_stats ON logs(started_at DESC, provider_id, provider_model, anthropic_model);
+      CREATE INDEX IF NOT EXISTS idx_logs_stats ON logs(started_at DESC, provider_id, provider_model, client_model, anthropic_model);
     `);
     this.backfillStatsColumns();
     this.persist();
@@ -35,7 +35,7 @@ export class LogStore {
 
   upsert(entry: LogEntry): void {
     const db = this.requireDb();
-    const usage = openAIUsage(entry.providerResponse);
+    const usage = usageTokens(entry.providerResponse);
     db.run(
       `INSERT OR REPLACE INTO logs (
         id,
@@ -43,6 +43,9 @@ export class LogStore {
         completed_at,
         status,
         status_code,
+        client_protocol,
+        provider_protocol,
+        client_model,
         anthropic_model,
         provider_id,
         provider_model,
@@ -52,13 +55,16 @@ export class LogStore {
         duration_ms,
         queue_wait_ms,
         entry_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         entry.id,
         entry.startedAt,
         entry.completedAt ?? null,
         entry.status,
         entry.statusCode ?? null,
+        entry.clientProtocol ?? null,
+        entry.providerProtocol ?? null,
+        entry.clientModel ?? entry.anthropicModel ?? null,
         entry.anthropicModel ?? null,
         entry.providerId ?? null,
         entry.providerModel ?? null,
@@ -144,6 +150,9 @@ export class LogStore {
     const additions: Record<string, string> = {
       completed_at: "ALTER TABLE logs ADD COLUMN completed_at TEXT",
       status_code: "ALTER TABLE logs ADD COLUMN status_code INTEGER",
+      client_protocol: "ALTER TABLE logs ADD COLUMN client_protocol TEXT",
+      provider_protocol: "ALTER TABLE logs ADD COLUMN provider_protocol TEXT",
+      client_model: "ALTER TABLE logs ADD COLUMN client_model TEXT",
       anthropic_model: "ALTER TABLE logs ADD COLUMN anthropic_model TEXT",
       provider_id: "ALTER TABLE logs ADD COLUMN provider_id TEXT",
       provider_model: "ALTER TABLE logs ADD COLUMN provider_model TEXT",
@@ -160,17 +169,20 @@ export class LogStore {
 
   private backfillStatsColumns(): void {
     const db = this.requireDb();
-    const rows = db.exec("SELECT id, entry_json FROM logs WHERE provider_id IS NULL OR completed_at IS NULL");
+    const rows = db.exec("SELECT id, entry_json FROM logs WHERE provider_id IS NULL OR completed_at IS NULL OR client_model IS NULL");
     for (const row of rows[0]?.values ?? []) {
       const id = String(row[0]);
       const entry = JSON.parse(String(row[1])) as LogEntry;
-      const usage = openAIUsage(entry.providerResponse);
+      const usage = usageTokens(entry.providerResponse);
       db.run(
         `UPDATE logs SET
           started_at = ?,
           completed_at = ?,
           status = ?,
           status_code = ?,
+          client_protocol = ?,
+          provider_protocol = ?,
+          client_model = ?,
           anthropic_model = ?,
           provider_id = ?,
           provider_model = ?,
@@ -185,6 +197,9 @@ export class LogStore {
           entry.completedAt ?? null,
           entry.status,
           entry.statusCode ?? null,
+          entry.clientProtocol ?? (entry.anthropicModel ? "anthropic" : null),
+          entry.providerProtocol ?? (entry.providerId ? "openai" : null),
+          entry.clientModel ?? entry.anthropicModel ?? null,
           entry.anthropicModel ?? null,
           entry.providerId ?? null,
           entry.providerModel ?? null,
@@ -214,26 +229,28 @@ export class LogStore {
 }
 
 function bucketSql(granularity: StatsGranularity): string {
-  if (granularity === "month") return "substr(started_at, 1, 7)";
-  if (granularity === "day") return "substr(started_at, 1, 10)";
-  return "substr(started_at, 1, 13) || ':00'";
+  if (granularity === "month") return "strftime('%Y-%m', started_at, 'localtime')";
+  if (granularity === "day") return "strftime('%Y-%m-%d', started_at, 'localtime')";
+  return "strftime('%Y-%m-%d %H:00', started_at, 'localtime')";
 }
 
 function groupBySql(groupBy: StatsGroupBy): string {
   if (groupBy === "providerModel") return "COALESCE(provider_id, '-') || ' / ' || COALESCE(provider_model, '-')";
-  if (groupBy === "anthropicModel") return "anthropic_model";
+  if (groupBy === "clientModel" || groupBy === "anthropicModel") return "COALESCE(client_model, anthropic_model)";
+  if (groupBy === "clientProtocol") return "client_protocol";
+  if (groupBy === "providerProtocol") return "provider_protocol";
   return "provider_id";
 }
 
-function openAIUsage(providerResponse: unknown): { promptTokens: number; completionTokens: number } {
+function usageTokens(providerResponse: unknown): { promptTokens: number; completionTokens: number } {
   if (!providerResponse || typeof providerResponse !== "object") return { promptTokens: 0, completionTokens: 0 };
   const response = providerResponse as { usage?: unknown; json?: unknown };
   const usage = response.usage ?? (response.json && typeof response.json === "object" ? (response.json as { usage?: unknown }).usage : undefined);
   if (!usage || typeof usage !== "object") return { promptTokens: 0, completionTokens: 0 };
   const record = usage as Record<string, unknown>;
   return {
-    promptTokens: numberValue(record.prompt_tokens),
-    completionTokens: numberValue(record.completion_tokens)
+    promptTokens: numberValue(record.prompt_tokens ?? record.input_tokens),
+    completionTokens: numberValue(record.completion_tokens ?? record.output_tokens)
   };
 }
 

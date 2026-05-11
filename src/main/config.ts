@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DEFAULT_CONFIG, GatewayConfig, ModelMapping, ProviderConfig } from "../shared/types.js";
+import { DEFAULT_CONFIG, GatewayConfig, LlmProtocol, ModelMapping, ProviderConfig } from "../shared/types.js";
 
 const CONFIG_FILE = "config.json";
 
@@ -77,11 +77,16 @@ function normalizeProviders(providers: GatewayConfig["providers"]): Record<strin
     normalized[trimmedId] = {
       baseUrl,
       apiKey: provider.apiKey ?? "",
+      protocol: normalizeProviderProtocol(provider.protocol),
       concurrency: normalizeConcurrency(provider.concurrency),
       model_list: normalizeModelList(provider.model_list)
     };
   }
   return Object.keys(normalized).length ? normalized : structuredClone(DEFAULT_CONFIG.providers);
+}
+
+function normalizeProviderProtocol(protocol: unknown): LlmProtocol {
+  return protocol === "anthropic" ? "anthropic" : "openai";
 }
 
 function normalizeConcurrency(concurrency: ProviderConfig["concurrency"]): number | undefined {

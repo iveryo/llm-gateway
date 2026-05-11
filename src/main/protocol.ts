@@ -24,21 +24,51 @@ type AnthropicRequest = {
 };
 
 type OpenAIMessage = {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  role: "system" | "developer" | "user" | "assistant" | "tool";
+  content?: unknown;
   tool_call_id?: string;
-  tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
+  tool_calls?: Array<{ id?: string; type?: "function"; function?: { name?: string; arguments?: string } }>;
 };
 
-export function anthropicToOpenAI(body: AnthropicRequest, config: GatewayConfig) {
-  const anthropicModel = body.model ?? "";
-  const mapping = config.modelMappings[anthropicModel];
+type OpenAIRequest = {
+  model?: string;
+  messages?: OpenAIMessage[];
+  max_tokens?: number;
+  max_completion_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  stop?: string | string[];
+  stream?: boolean;
+  tools?: Array<{ type?: string; function?: { name?: string; description?: string; parameters?: unknown } }>;
+  tool_choice?: string | { type?: string; function?: { name?: string } };
+};
+
+export type ModelRoute = {
+  clientModel: string;
+  providerId: string;
+  providerModel: string;
+  warning?: string;
+};
+
+export function resolveModelRoute(model: string | undefined, config: GatewayConfig): ModelRoute {
+  const clientModel = model ?? "";
+  const mapping = config.modelMappings[clientModel];
   const providerId = mapping?.provider ?? config.defaultProvider;
   const providerModel = mapping?.model ?? config.defaultModel;
-  const warning = anthropicModel && !mapping
-    ? `No model mapping for ${anthropicModel}; used ${providerId}/${providerModel}`
+  const warning = clientModel && !mapping
+    ? `No model mapping for ${clientModel}; used ${providerId}/${providerModel}`
     : undefined;
 
+  return {
+    clientModel,
+    providerId,
+    providerModel,
+    warning
+  };
+}
+
+export function anthropicToOpenAI(body: AnthropicRequest, config: GatewayConfig) {
+  const route = resolveModelRoute(body.model, config);
   const messages: OpenAIMessage[] = [];
   const system = normalizeSystem(body.system);
   if (system) messages.push({ role: "system", content: system });
@@ -48,7 +78,7 @@ export function anthropicToOpenAI(body: AnthropicRequest, config: GatewayConfig)
   }
 
   const request: Record<string, unknown> = {
-    model: providerModel,
+    model: route.providerModel,
     messages,
     max_tokens: body.max_tokens,
     temperature: body.temperature,
@@ -73,15 +103,101 @@ export function anthropicToOpenAI(body: AnthropicRequest, config: GatewayConfig)
   }
 
   if (body.tool_choice) {
-    request.tool_choice = convertToolChoice(body.tool_choice);
+    request.tool_choice = anthropicToolChoiceToOpenAI(body.tool_choice);
   }
 
   return {
-    anthropicModel,
-    providerId,
-    providerModel,
-    warning,
+    anthropicModel: route.clientModel,
+    clientModel: route.clientModel,
+    providerId: route.providerId,
+    providerModel: route.providerModel,
+    warning: route.warning,
     request: stripUndefined(request)
+  };
+}
+
+export function openAIRequestToAnthropic(body: OpenAIRequest, config: GatewayConfig) {
+  const route = resolveModelRoute(body.model, config);
+  const systemParts: string[] = [];
+  const messages: AnthropicMessage[] = [];
+
+  for (const message of body.messages ?? []) {
+    if (message.role === "system" || message.role === "developer") {
+      const text = openAIContentToText(message.content);
+      if (text) systemParts.push(text);
+      continue;
+    }
+
+    if (message.role === "tool") {
+      messages.push({
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: message.tool_call_id ?? "",
+          content: openAIContentToText(message.content)
+        }]
+      });
+      continue;
+    }
+
+    if (message.role === "assistant") {
+      const content = openAIAssistantContentToAnthropic(message);
+      messages.push({ role: "assistant", content });
+      continue;
+    }
+
+    messages.push({
+      role: "user",
+      content: openAIContentToText(message.content)
+    });
+  }
+
+  const request: Record<string, unknown> = {
+    model: route.providerModel,
+    max_tokens: body.max_tokens ?? body.max_completion_tokens ?? 4096,
+    system: systemParts.length ? systemParts.join("\n\n") : undefined,
+    messages,
+    temperature: body.temperature,
+    top_p: body.top_p,
+    stop_sequences: normalizeOpenAIStop(body.stop),
+    stream: Boolean(body.stream)
+  };
+
+  if (body.tools?.length) {
+    request.tools = body.tools
+      .filter((tool) => tool.type === "function" || tool.function)
+      .map((tool) => ({
+        name: tool.function?.name ?? "",
+        description: tool.function?.description ?? "",
+        input_schema: tool.function?.parameters ?? { type: "object", properties: {} }
+      }))
+      .filter((tool) => tool.name);
+  }
+
+  if (body.tool_choice) {
+    request.tool_choice = openAIToolChoiceToAnthropic(body.tool_choice);
+  }
+
+  return {
+    clientModel: route.clientModel,
+    providerId: route.providerId,
+    providerModel: route.providerModel,
+    warning: route.warning,
+    request: stripUndefined(request)
+  };
+}
+
+export function openAITransparentRequest(body: OpenAIRequest, providerModel: string) {
+  return {
+    ...body,
+    model: providerModel
+  };
+}
+
+export function anthropicTransparentRequest(body: AnthropicRequest, providerModel: string) {
+  return {
+    ...body,
+    model: providerModel
   };
 }
 
@@ -104,32 +220,53 @@ export function openAIToAnthropic(body: any, responseModel: string) {
   };
 }
 
+export function anthropicToOpenAIResponse(body: any, responseModel: string) {
+  const message = anthropicContentToOpenAIMessage(body?.content);
+  return {
+    id: body?.id ?? `chatcmpl_${crypto.randomUUID()}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: responseModel,
+    choices: [{
+      index: 0,
+      message,
+      finish_reason: anthropicStopReasonToOpenAI(body?.stop_reason)
+    }],
+    usage: {
+      prompt_tokens: body?.usage?.input_tokens ?? 0,
+      completion_tokens: body?.usage?.output_tokens ?? 0,
+      total_tokens: (body?.usage?.input_tokens ?? 0) + (body?.usage?.output_tokens ?? 0)
+    }
+  };
+}
+
 export function openAIStreamToAnthropicEvents(lines: string[], providerModel: string): unknown[] {
   const messageId = `msg_${crypto.randomUUID()}`;
-  const events: unknown[] = [
-    {
-      event: "message_start",
-      data: {
-        type: "message_start",
-        message: {
-          id: messageId,
-          type: "message",
-          role: "assistant",
-          model: providerModel,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 }
-        }
+  const messageStart = {
+    event: "message_start",
+    data: {
+      type: "message_start",
+      message: {
+        id: messageId,
+        type: "message",
+        role: "assistant",
+        model: providerModel,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 }
       }
     }
-  ];
+  };
+  const events: unknown[] = [messageStart];
 
   let textBlockOpen = false;
   let textIndex = 0;
   const toolCalls = new Map<number, { id: string; name: string; arguments: string; index: number }>();
   let nextBlockIndex = 0;
   let stopReason: string | null = null;
+  let inputTokens = 0;
+  let outputTokens = 0;
 
   for (const line of lines) {
     if (!line.startsWith("data:")) continue;
@@ -137,6 +274,10 @@ export function openAIStreamToAnthropicEvents(lines: string[], providerModel: st
     if (!payload || payload === "[DONE]") continue;
 
     const chunk = JSON.parse(payload);
+    if (chunk.usage) {
+      inputTokens = numberValue(chunk.usage.prompt_tokens) ?? inputTokens;
+      outputTokens = numberValue(chunk.usage.completion_tokens) ?? outputTokens;
+    }
     const choice = chunk.choices?.[0];
     const delta = choice?.delta ?? {};
     if (choice?.finish_reason) stopReason = finishReasonToAnthropic(choice.finish_reason);
@@ -189,6 +330,7 @@ export function openAIStreamToAnthropicEvents(lines: string[], providerModel: st
     }
   }
 
+  messageStart.data.message.usage.input_tokens = inputTokens;
   if (textBlockOpen) {
     events.push({ event: "content_block_stop", data: { type: "content_block_stop", index: textIndex } });
   }
@@ -201,11 +343,86 @@ export function openAIStreamToAnthropicEvents(lines: string[], providerModel: st
     data: {
       type: "message_delta",
       delta: { stop_reason: stopReason ?? "end_turn", stop_sequence: null },
-      usage: { output_tokens: 0 }
+      usage: { output_tokens: outputTokens }
     }
   });
   events.push({ event: "message_stop", data: { type: "message_stop" } });
   return events;
+}
+
+export function anthropicStreamToOpenAIChunks(events: unknown[], responseModel: string): unknown[] {
+  const created = Math.floor(Date.now() / 1000);
+  let id = `chatcmpl_${crypto.randomUUID()}`;
+  let finishReason: string | null = null;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let nextToolIndex = 0;
+  const toolIndexes = new Map<number, number>();
+  const chunks: unknown[] = [];
+
+  for (const event of events as any[]) {
+    if (event.event === "message_start") {
+      const message = event.data?.message ?? {};
+      id = message.id ? `chatcmpl_${message.id}` : id;
+      promptTokens = numberValue(message.usage?.input_tokens) ?? promptTokens;
+      chunks.push(openAIChunk(id, created, responseModel, { role: "assistant" }, null));
+      continue;
+    }
+
+    if (event.event === "content_block_start") {
+      const block = event.data?.content_block;
+      if (block?.type !== "tool_use") continue;
+      const toolIndex = nextToolIndex++;
+      toolIndexes.set(event.data.index, toolIndex);
+      chunks.push(openAIChunk(id, created, responseModel, {
+        tool_calls: [{
+          index: toolIndex,
+          id: block.id ?? `call_${crypto.randomUUID()}`,
+          type: "function",
+          function: { name: block.name ?? "", arguments: "" }
+        }]
+      }, null));
+      continue;
+    }
+
+    if (event.event === "content_block_delta") {
+      const delta = event.data?.delta;
+      if (delta?.type === "text_delta") {
+        chunks.push(openAIChunk(id, created, responseModel, { content: delta.text ?? "" }, null));
+      }
+      if (delta?.type === "input_json_delta") {
+        const toolIndex = toolIndexes.get(event.data.index) ?? 0;
+        chunks.push(openAIChunk(id, created, responseModel, {
+          tool_calls: [{
+            index: toolIndex,
+            function: { arguments: delta.partial_json ?? "" }
+          }]
+        }, null));
+      }
+      continue;
+    }
+
+    if (event.event === "message_delta") {
+      finishReason = anthropicStopReasonToOpenAI(event.data?.delta?.stop_reason);
+      completionTokens = numberValue(event.data?.usage?.output_tokens) ?? completionTokens;
+      chunks.push(openAIChunk(id, created, responseModel, {}, finishReason));
+    }
+  }
+
+  chunks.push({
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model: responseModel,
+    choices: [],
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens
+    }
+  });
+
+  return chunks;
 }
 
 export function openAIStreamToJson(lines: string[]) {
@@ -265,6 +482,43 @@ export function openAIStreamToJson(lines: string[]) {
   });
 }
 
+export function anthropicStreamToEvents(lines: string[]): unknown[] {
+  const events: unknown[] = [];
+  let eventName = "";
+  let dataLines: string[] = [];
+
+  const flush = () => {
+    if (!eventName && dataLines.length === 0) return;
+    const dataText = dataLines.join("\n");
+    let data: unknown = dataText;
+    try {
+      data = dataText ? JSON.parse(dataText) : {};
+    } catch {
+      data = dataText;
+    }
+    events.push({ event: eventName || (data as any)?.type || "message", data });
+    eventName = "";
+    dataLines = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line) {
+      flush();
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+  flush();
+  return events;
+}
+
 export function anthropicEventsToMessage(events: unknown[]) {
   const firstMessage = events.find((event: any) => event.event === "message_start") as any;
   const message = structuredClone(firstMessage?.data?.message ?? {
@@ -315,6 +569,10 @@ export function anthropicEventsToMessage(events: unknown[]) {
 
 export function sseFormat(events: unknown[]): string {
   return events.map((event: any) => `event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`).join("");
+}
+
+export function openAISseFormat(chunks: unknown[]): string {
+  return `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`;
 }
 
 export function redact(value: unknown): unknown {
@@ -371,6 +629,39 @@ function convertAnthropicMessage(message: AnthropicMessage): OpenAIMessage[] {
   return result.map((item) => stripUndefined(item) as OpenAIMessage);
 }
 
+function openAIAssistantContentToAnthropic(message: OpenAIMessage): AnthropicMessage["content"] {
+  const content: AnthropicContentBlock[] = [];
+  const text = openAIContentToText(message.content);
+  if (text) content.push({ type: "text", text });
+
+  for (const call of message.tool_calls ?? []) {
+    content.push({
+      type: "tool_use",
+      id: call.id ?? `call_${crypto.randomUUID()}`,
+      name: call.function?.name ?? "",
+      input: parseJsonObject(call.function?.arguments)
+    });
+  }
+
+  if (content.length === 1 && content[0].type === "text") return content[0].text;
+  return content;
+}
+
+function openAIContentToText(content: unknown): string {
+  if (content === undefined || content === null) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (!part || typeof part !== "object") return String(part ?? "");
+      const record = part as Record<string, unknown>;
+      if (record.type === "text" && typeof record.text === "string") return record.text;
+      if (typeof record.text === "string") return record.text;
+      return JSON.stringify(record);
+    }).filter(Boolean).join("");
+  }
+  return JSON.stringify(content);
+}
+
 function openAIMessageToAnthropicContent(message: any): AnthropicContentBlock[] {
   const blocks: AnthropicContentBlock[] = [];
   if (message.content) blocks.push({ type: "text", text: String(message.content) });
@@ -385,12 +676,59 @@ function openAIMessageToAnthropicContent(message: any): AnthropicContentBlock[] 
   return blocks;
 }
 
-function convertToolChoice(toolChoice: NonNullable<AnthropicRequest["tool_choice"]>) {
+function anthropicContentToOpenAIMessage(content: unknown): Record<string, unknown> {
+  if (typeof content === "string") {
+    return { role: "assistant", content };
+  }
+
+  const text: string[] = [];
+  const toolCalls: unknown[] = [];
+  for (const block of Array.isArray(content) ? content : []) {
+    if (!block || typeof block !== "object") continue;
+    const record = block as Record<string, unknown>;
+    if (record.type === "text") {
+      text.push(String(record.text ?? ""));
+    }
+    if (record.type === "tool_use") {
+      toolCalls.push({
+        id: String(record.id ?? `call_${crypto.randomUUID()}`),
+        type: "function",
+        function: {
+          name: String(record.name ?? ""),
+          arguments: JSON.stringify(record.input ?? {})
+        }
+      });
+    }
+  }
+
+  return stripUndefined({
+    role: "assistant",
+    content: text.join("") || null,
+    tool_calls: toolCalls.length ? toolCalls : undefined
+  });
+}
+
+function anthropicToolChoiceToOpenAI(toolChoice: NonNullable<AnthropicRequest["tool_choice"]>) {
   if (toolChoice.type === "auto") return "auto";
   if (toolChoice.type === "any") return "required";
   if (toolChoice.type === "tool" && toolChoice.name) {
     return { type: "function", function: { name: toolChoice.name } };
   }
+  return undefined;
+}
+
+function openAIToolChoiceToAnthropic(toolChoice: NonNullable<OpenAIRequest["tool_choice"]>) {
+  if (toolChoice === "auto") return { type: "auto" };
+  if (toolChoice === "required") return { type: "any" };
+  if (typeof toolChoice === "object" && toolChoice.type === "function" && toolChoice.function?.name) {
+    return { type: "tool", name: toolChoice.function.name };
+  }
+  return undefined;
+}
+
+function normalizeOpenAIStop(stop: OpenAIRequest["stop"]): string[] | undefined {
+  if (Array.isArray(stop)) return stop;
+  if (typeof stop === "string") return [stop];
   return undefined;
 }
 
@@ -401,7 +739,13 @@ function finishReasonToAnthropic(reason: string | null | undefined): string {
   return "end_turn";
 }
 
-function parseJsonObject(value: string): unknown {
+function anthropicStopReasonToOpenAI(reason: string | null | undefined): string {
+  if (reason === "tool_use") return "tool_calls";
+  if (reason === "max_tokens") return "length";
+  return "stop";
+}
+
+function parseJsonObject(value: string | undefined): unknown {
   try {
     return value ? JSON.parse(value) : {};
   } catch {
@@ -418,4 +762,18 @@ function toolInputDelta(index: number, partialJson: string) {
     event: "content_block_delta",
     data: { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: partialJson } }
   };
+}
+
+function openAIChunk(id: string, created: number, model: string, delta: Record<string, unknown>, finishReason: string | null) {
+  return {
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model,
+    choices: [{ index: 0, delta, finish_reason: finishReason }]
+  };
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

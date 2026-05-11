@@ -1,15 +1,26 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } from "electron";
 import { join } from "node:path";
 import { ConfigStore } from "./config.js";
 import { GatewayServer } from "./gateway.js";
 import { LogStore } from "./store.js";
 
 let mainWindow: BrowserWindow | undefined;
+let tray: Tray | undefined;
 let configStore: ConfigStore;
 let logStore: LogStore;
 let gateway: GatewayServer;
+let isQuitting = false;
+
+const TRAY_ICON_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABySURBVDhPY1AuqflPCR7WBvQf+v/oPwI82j8VqzrsBkA1H16BzH/9f3E/khooxmpA2P7X//9fXYMhjg1jNaD+KtB6mAErroO9AALYvEGkC6b+XwwUItoA7GFAigEgjBYL/18f+h+GRR1uA4jEowbU/AcAseU8uZxqk1sAAAAASUVORK5CYII=";
 
 async function createWindow(): Promise<void> {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 860,
@@ -23,7 +34,44 @@ async function createWindow(): Promise<void> {
     }
   });
 
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow?.hide();
+  });
+
+  mainWindow.on("closed", () => {
+    mainWindow = undefined;
+  });
+
   await mainWindow.loadFile(join(__dirname, "../../renderer/index.html"));
+}
+
+function createTray(): void {
+  if (tray) return;
+
+  const icon = nativeImage.createFromBuffer(Buffer.from(TRAY_ICON_PNG_BASE64, "base64")).resize({ width: 16, height: 16 });
+  tray = new Tray(icon);
+  tray.setToolTip("LLM Gateway");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    {
+      label: "显示 LLM Gateway",
+      click: () => {
+        void createWindow();
+      }
+    },
+    { type: "separator" },
+    {
+      label: "退出",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]));
+  tray.on("click", () => {
+    void createWindow();
+  });
 }
 
 app.whenReady().then(async () => {
@@ -38,6 +86,7 @@ app.whenReady().then(async () => {
     await gateway.restart();
     return saved;
   });
+  ipcMain.handle("gateway:status", () => gateway.getStatus());
   ipcMain.handle("logs:list", () => logStore.list());
   ipcMain.handle("logs:get", (_event, id: string) => logStore.get(id));
   ipcMain.handle("stats:list", (_event, granularity, groupBy) => logStore.stats(granularity, groupBy));
@@ -45,16 +94,18 @@ app.whenReady().then(async () => {
 
   await gateway.restart();
   await createWindow();
+  createTray();
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) void createWindow();
+    void createWindow();
   });
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (isQuitting && process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   void gateway?.stop();
 });
