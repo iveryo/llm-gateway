@@ -1,4 +1,4 @@
-import { ArrowRight, Copy, Download, FileText, Globe2, LogIn, LogOut, Radio, RefreshCw, Save, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowRight, Copy, FileInput, FileOutput, FileText, Globe2, LogIn, LogOut, Radio, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { ChangeEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_CONFIG, GatewayConfig, GatewayStatus, LogEntry, StatsGranularity, StatsGroupBy, UsageStatsRow } from "../shared/types";
 
@@ -65,8 +65,8 @@ const TEXT = {
       copyJson: "Copy JSON",
       copyRaw: "Copy raw",
       copyValue: "Copy value",
-      exportJson: "Export JSON",
-      importJson: "Import JSON",
+      exportConfig: "Export config",
+      importConfig: "Import config",
       previewMarkdown: "Markdown preview",
       refreshLogs: "Refresh logs",
       save: "Save and restart gateway",
@@ -156,6 +156,8 @@ const TEXT = {
       openaiClient: "OpenAI-compatible clients",
       openaiClientText: "Use the /v1 base URL and set the API key to the local token.",
       openaiEndpoint: "OpenAI Chat Completions endpoint",
+      responsesEndpoint: "OpenAI Responses endpoint",
+      modelsEndpoint: "Local Models endpoint",
       subtitle: "Use these values in clients that connect to the local gateway.",
       title: "Client setup"
     },
@@ -221,8 +223,8 @@ const TEXT = {
       copyValue: "复制值",
       previewMarkdown: "Markdown 预览",
       clearLogs: "清空日志",
-      exportJson: "导出 JSON",
-      importJson: "导入 JSON",
+      exportConfig: "导出配置",
+      importConfig: "导入配置",
       refreshLogs: "刷新日志",
       save: "保存并重启网关",
       saved: "已保存"
@@ -310,6 +312,8 @@ const TEXT = {
       openaiClient: "OpenAI 兼容客户端",
       openaiClientText: "base URL 使用 /v1 地址，API key 使用本地令牌。",
       openaiEndpoint: "OpenAI Chat Completions 入口",
+      responsesEndpoint: "OpenAI Responses 入口",
+      modelsEndpoint: "本地 Models 入口",
       subtitle: "把这些值填到连接本地网关的客户端里。",
       title: "客户端入口说明"
     },
@@ -926,6 +930,14 @@ function HelpPanel({ config, t }: { config: GatewayConfig; t: UiText }) {
           <code>POST {openAIBaseUrl}/chat/completions</code>
         </div>
         <div className="helpBlock">
+          <h3>{t.help.responsesEndpoint}</h3>
+          <code>POST {openAIBaseUrl}/responses</code>
+        </div>
+        <div className="helpBlock">
+          <h3>{t.help.modelsEndpoint}</h3>
+          <code>GET {openAIBaseUrl}/models</code>
+        </div>
+        <div className="helpBlock">
           <h3>{t.help.authTitle}</h3>
           <p>{t.help.authText}</p>
           <code>{authHeader}</code>
@@ -967,13 +979,24 @@ function ConfigPanel({
 }) {
   const [providersText, setProvidersText] = useState(JSON.stringify(config.providers, null, 2));
   const [mappingText, setMappingText] = useState(JSON.stringify(config.modelMappings, null, 2));
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<{ message: string; id: number }>();
+  const nextErrorId = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setProvidersText(JSON.stringify(config.providers, null, 2));
     setMappingText(JSON.stringify(config.modelMappings, null, 2));
   }, [config.providers, config.modelMappings]);
+
+  useEffect(() => {
+    if (!error) return;
+    const timeout = window.setTimeout(() => setError(undefined), 8000);
+    return () => window.clearTimeout(timeout);
+  }, [error]);
+
+  function showError(message: string) {
+    setError({ message, id: nextErrorId.current++ });
+  }
 
   function update<K extends keyof GatewayConfig>(key: K, value: GatewayConfig[K]) {
     setConfig({ ...config, [key]: value });
@@ -988,7 +1011,7 @@ function ConfigPanel({
       window.setTimeout(() => setSaved(false), 1400);
     } catch (error) {
       setSaved(false);
-      setError(errorMessage(error, t.errors.saveFailed));
+      showError(errorMessage(error, t.errors.saveFailed));
     }
   }
 
@@ -1004,7 +1027,7 @@ function ConfigPanel({
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (error) {
-      setError(errorMessage(error, t.errors.saveFailed));
+      showError(errorMessage(error, t.errors.saveFailed));
     }
   }
 
@@ -1023,7 +1046,7 @@ function ConfigPanel({
       setSaved(false);
     } catch (error) {
       setSaved(false);
-      setError(errorMessage(error, t.errors.saveFailed));
+      showError(errorMessage(error, t.errors.saveFailed));
     }
   }
 
@@ -1042,13 +1065,22 @@ function ConfigPanel({
           <h2>{t.config.title}</h2>
           <p>{config.host}:{config.port}</p>
         </div>
-        {error && <div className="configError" role="alert">{error}</div>}
         <div className="configActions">
           <input ref={fileInputRef} className="fileInput" type="file" accept="application/json,.json" onChange={importConfig} />
-          <button className="secondary" onClick={() => fileInputRef.current?.click()}><Upload size={16} /> {t.actions.importJson}</button>
-          <button className="secondary" onClick={exportConfig}><Download size={16} /> {t.actions.exportJson}</button>
+          <button className="secondary" onClick={() => fileInputRef.current?.click()}><FileInput size={16} /> {t.actions.importConfig}</button>
+          <button className="secondary" onClick={exportConfig}><FileOutput size={16} /> {t.actions.exportConfig}</button>
           <button className="primary" onClick={save}><Save size={16} /> {saved ? t.actions.saved : t.actions.save}</button>
         </div>
+        {error && (
+          <div className="configToastLayer">
+            <div className="configToast" role="alert" aria-live="assertive">
+              <span className="configToastMessage">{error.message}</span>
+              <button className="configToastClose" type="button" onClick={() => setError(undefined)} title={t.actions.close} aria-label={t.actions.close}>
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       <section className="configSection wideSection">
         <div className="sectionIntro">

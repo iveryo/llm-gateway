@@ -6,7 +6,7 @@ LLM Gateway 是一个本地 Electron 应用，用于把 OpenAI Chat Completions 
 
 支持的协议路径：
 
-- `openai -> openai`：`POST /v1/chat/completions` 透明代理。
+- `openai -> openai`：`POST /v1/chat/completions` 和 `POST /v1/responses` 透明代理。
 - `anthropic -> anthropic`：`POST /v1/messages` 透明代理。
 - `anthropic -> openai`：Anthropic Messages 与 OpenAI Chat Completions 之间的协议适配。
 - `openai -> anthropic`：OpenAI Chat Completions 与 Anthropic Messages 之间的协议适配。
@@ -67,6 +67,16 @@ OpenAI 兼容客户端使用：
 POST http://127.0.0.1:3456/v1/chat/completions
 ```
 
+Codex CLI 等 Responses 兼容客户端使用：
+
+```text
+POST http://127.0.0.1:3456/v1/responses
+GET http://127.0.0.1:3456/v1/models
+GET http://127.0.0.1:3456/v1/models/{model_id}
+```
+
+模型接口只返回已配置的入口 `modelMappings`。默认使用 OpenAI models 返回结构；当请求带有 `anthropic-version` 或 `X-Api-Key` 等 Anthropic 风格请求头时，返回 Anthropic models 结构；也可以通过 `?format=openai` 或 `?format=anthropic` 显式指定。
+
 本地网关鉴权接受两种请求头：
 
 - `Authorization: Bearer <localToken>`
@@ -126,6 +136,10 @@ OpenAI provider 的 base URL 规则：
 - `https://api.example.com/v1` 会变为 `https://api.example.com/v1/chat/completions`
 - `https://ark.cn-beijing.volces.com/api/coding/v3` 会变为 `https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions`
 - 已经以 `/chat/completions` 结尾的 URL 会直接使用。
+
+Responses 请求复用同一套 OpenAI provider 配置，但上游 URL 会以 `/responses` 结尾，而不是 `/chat/completions`。Responses 请求必须映射到 OpenAI 兼容 provider，当前不会转换到 Anthropic Messages。
+
+本地模型接口 `GET /v1/models` 和 `GET /v1/models/{model_id}` 只返回 `modelMappings` 里配置的入口模型名。
 
 Anthropic provider 的 base URL 规则：
 
@@ -212,7 +226,8 @@ npm run dev
 
 ## 备注
 
-- OpenAI 入口当前支持 `POST /v1/chat/completions`。
+- OpenAI 入口当前支持 `POST /v1/chat/completions` 和 `POST /v1/responses`。
+- `GET /v1/models` 和 `GET /v1/models/{model_id}` 仅使用本地配置，返回已配置的模型映射，不请求上游服务商。返回结构会根据请求头自动适配 OpenAI 或 Anthropic 客户端，也可以用 `?format=openai` / `?format=anthropic` 显式指定。
 - Anthropic 入口当前支持 `POST /v1/messages`。
 - 工具调用和流式响应会在支持的路径上进行 Anthropic 与 OpenAI 兼容格式转换。
 - 当前暂不支持配置内置 OpenAI/Anthropic 鉴权头之外的服务商专用请求头。

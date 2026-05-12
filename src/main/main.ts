@@ -82,8 +82,9 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("config:get", () => configStore.get());
   ipcMain.handle("config:save", async (_event, config) => {
+    const previous = configStore.get();
     const saved = configStore.save(config);
-    await gateway.restart();
+    await gateway.applyConfig(previous);
     return saved;
   });
   ipcMain.handle("gateway:status", () => gateway.getStatus());

@@ -20,10 +20,20 @@ import {
   resolveModelRoute,
   sseFormat
 } from "./protocol.js";
-import { providerChatCompletionsUrl, providerMessagesUrl } from "./provider.js";
+import { providerChatCompletionsUrl, providerMessagesUrl, providerResponsesUrl } from "./provider.js";
 import { RequestQueue } from "./requestQueue.js";
 
 const ANTHROPIC_VERSION = "2023-06-01";
+const SUPPORTED_ENDPOINTS =
+  "Supported endpoints are GET /v1/models, GET /v1/models/{model_id}, POST /v1/messages, POST /v1/chat/completions, and POST /v1/responses";
+
+type ProviderEndpoint = "messages" | "chatCompletions" | "responses";
+
+type ClientRoute = {
+  protocol: LlmProtocol;
+  endpoint: ProviderEndpoint;
+  path: string;
+};
 
 type ConvertedRequest = {
   clientModel: string;
@@ -47,11 +57,14 @@ type PreparedProviderRequest = {
   body: string;
 };
 
+type ModelsResponseFormat = "openai" | "anthropic";
+
 type RawHeaderValue = string | string[] | number | undefined;
 type RawHeaderMap = Record<string, RawHeaderValue>;
 
 export class GatewayServer {
   private server?: http.Server;
+  private lifecycle = Promise.resolve();
   private readonly queues = new Map<string, RequestQueue>();
   private status: GatewayStatus;
 
@@ -65,43 +78,100 @@ export class GatewayServer {
   }
 
   async restart(): Promise<void> {
-    await this.stop();
-    const config = this.configStore.get();
+    await this.enqueueLifecycle(async () => {
+      await this.stopNow();
+      await this.startNow(this.configStore.get());
+    });
+  }
+
+  async applyConfig(previousConfig: GatewayConfig): Promise<void> {
+    await this.enqueueLifecycle(async () => {
+      const config = this.configStore.get();
+      this.configureQueues(config);
+
+      if (!this.server) {
+        await this.startNow(config);
+        return;
+      }
+
+      if (!listenerAddressChanged(previousConfig, config)) {
+        this.setStatus("running", config);
+        return;
+      }
+
+      await this.stopNow();
+      await this.startNow(config);
+    });
+  }
+
+  async stop(): Promise<void> {
+    await this.enqueueLifecycle(() => this.stopNow());
+  }
+
+  getStatus(): GatewayStatus {
+    return this.status;
+  }
+
+  private async enqueueLifecycle(operation: () => Promise<void>): Promise<void> {
+    const run = this.lifecycle.catch(() => undefined).then(operation);
+    this.lifecycle = run.catch(() => undefined);
+    return run;
+  }
+
+  private async startNow(config: GatewayConfig): Promise<void> {
     this.setStatus("starting", config);
     this.configureQueues(config);
-    this.server = http.createServer((req, res) => {
+    const server = http.createServer((req, res) => {
       void this.handle(req, res).catch((error) => this.writeError(res, 500, "internal_error", String(error)));
     });
-    this.server.on("error", (error) => {
-      this.setStatus("error", config, error.message);
-    });
+
     try {
       await new Promise<void>((resolve, reject) => {
-        this.server?.once("error", reject);
-        this.server?.listen(config.port, config.host, () => resolve());
+        const onError = (error: Error) => {
+          server.off("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.off("error", onError);
+          resolve();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(config.port, config.host);
       });
+      server.on("error", (error) => {
+        if (this.server === server) this.setStatus("error", config, error.message);
+      });
+      this.server = server;
       this.setStatus("running", config);
     } catch (error) {
-      this.server = undefined;
+      try {
+        server.close();
+      } catch {
+        // Ignore close errors for a server that never started listening.
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.setStatus("error", config, message);
       throw error;
     }
   }
 
-  async stop(): Promise<void> {
+  private async stopNow(): Promise<void> {
     const config = this.configStore.get();
-    if (!this.server) {
+    const server = this.server;
+    if (!server) {
       if (this.status.state !== "error") this.setStatus("stopped", config);
       return;
     }
-    await new Promise<void>((resolve) => this.server?.close(() => resolve()));
     this.server = undefined;
+    await new Promise<void>((resolve, reject) => {
+      server.close((error?: Error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+      server.closeIdleConnections?.();
+    });
     this.setStatus("stopped", config);
-  }
-
-  getStatus(): GatewayStatus {
-    return this.status;
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -111,11 +181,29 @@ export class GatewayServer {
       return;
     }
 
-    const clientProtocol = this.clientProtocol(req);
-    if (!clientProtocol) {
-      this.writeError(res, 404, "not_found_error", "Supported endpoints are POST /v1/messages and POST /v1/chat/completions");
+    if (this.isModelsRequest(req)) {
+      this.writeJson(res, 200, modelsResponse(config, modelsResponseFormat(req)));
       return;
     }
+
+    const modelId = this.modelDetailsId(req);
+    if (modelId) {
+      const format = modelsResponseFormat(req);
+      const body = modelResponse(config, modelId, format);
+      if (!body) {
+        this.writeError(res, 404, "not_found_error", `Model ${modelId} was not found`, format === "anthropic" ? "anthropic" : "openai");
+        return;
+      }
+      this.writeJson(res, 200, body);
+      return;
+    }
+
+    const clientRoute = this.clientRoute(req);
+    if (!clientRoute) {
+      this.writeError(res, 404, "not_found_error", SUPPORTED_ENDPOINTS);
+      return;
+    }
+    const clientProtocol = clientRoute.protocol;
 
     const rawBody = await readBody(req);
     const clientRequest = tryParseJson(rawBody);
@@ -132,15 +220,20 @@ export class GatewayServer {
     }
 
     const providerProtocol = provider.protocol ?? "openai";
-    const converted = this.convertRequest(clientProtocol, providerProtocol, clientRequest, config);
+    if (clientRoute.endpoint === "responses" && providerProtocol !== "openai") {
+      this.writeError(res, 501, "unsupported_endpoint_error", "Responses requests require an OpenAI-compatible provider", "openai");
+      return;
+    }
+
+    const converted = this.convertRequest(clientRoute, providerProtocol, clientRequest, config);
     const clientRequestBody = rawBodyForLog(rawBody, clientRequest, config);
-    const providerRequest = prepareProviderRequest(provider, providerProtocol, converted.request);
+    const providerRequest = prepareProviderRequest(provider, providerProtocol, clientRoute.endpoint, converted.request);
     const providerRequestBody = rawBodyForLog(providerRequest.body, converted.request, config);
     const log: LogEntry = {
       id: crypto.randomUUID(),
       startedAt: new Date().toISOString(),
       method: req.method ?? "POST",
-      path: req.url ?? this.defaultPath(clientProtocol),
+      path: req.url ?? clientRoute.path,
       status: "pending",
       clientProtocol,
       providerProtocol,
@@ -155,7 +248,7 @@ export class GatewayServer {
       anthropicRequest: clientProtocol === "anthropic" ? (config.redactSensitive ? redact(clientRequest) : clientRequest) : undefined,
       providerRequest: config.redactSensitive ? redact(converted.request) : converted.request,
       clientRequestRaw: formatHttpMessage(
-        formatHttpRequestLine(req.method ?? "POST", req.url ?? this.defaultPath(clientProtocol)),
+        formatHttpRequestLine(req.method ?? "POST", req.url ?? clientRoute.path),
         redactedHeaders(req.headers, config),
         clientRequestBody
       ),
@@ -202,7 +295,7 @@ export class GatewayServer {
       }
 
       if ((clientRequest as any).stream) {
-        const transformed = this.transformStream(text, clientProtocol, providerProtocol, converted);
+        const transformed = this.transformStream(text, clientRoute, providerProtocol, converted);
         log.status = "ok";
         log.streamEvents = config.redactSensitive ? (redact(transformed.streamEvents) as unknown[]) : transformed.streamEvents;
         log.providerResponse = config.redactSensitive ? redact(transformed.providerLog) : transformed.providerLog;
@@ -226,7 +319,7 @@ export class GatewayServer {
         res.end(transformed.body);
       } else {
         const providerJson = JSON.parse(text);
-        const clientJson = this.transformJson(providerJson, clientProtocol, providerProtocol, converted);
+        const clientJson = this.transformJson(providerJson, clientRoute, providerProtocol, converted);
         log.status = "ok";
         log.providerResponse = config.redactSensitive ? redact(providerJson) : providerJson;
         log.clientResponse = config.redactSensitive ? redact(clientJson) : clientJson;
@@ -256,11 +349,23 @@ export class GatewayServer {
   }
 
   private convertRequest(
-    clientProtocol: LlmProtocol,
+    clientRoute: ClientRoute,
     providerProtocol: LlmProtocol,
     body: unknown,
     config: GatewayConfig
   ): ConvertedRequest {
+    const clientProtocol = clientRoute.protocol;
+    if (clientRoute.endpoint === "responses") {
+      const route = resolveModelRoute(requestModel(body), config);
+      return {
+        clientModel: route.clientModel,
+        providerId: route.providerId,
+        providerModel: route.providerModel,
+        warning: route.warning,
+        request: openAITransparentRequest(body as any, route.providerModel)
+      };
+    }
+
     if (clientProtocol === "anthropic" && providerProtocol === "openai") {
       return anthropicToOpenAI(body as any, config);
     }
@@ -286,10 +391,15 @@ export class GatewayServer {
 
   private transformJson(
     providerJson: unknown,
-    clientProtocol: LlmProtocol,
+    clientRoute: ClientRoute,
     providerProtocol: LlmProtocol,
     converted: ConvertedRequest
   ): unknown {
+    if (clientRoute.endpoint === "responses") {
+      return providerJson;
+    }
+
+    const clientProtocol = clientRoute.protocol;
     const responseModel = converted.clientModel || converted.providerModel;
 
     if (clientProtocol === providerProtocol) {
@@ -305,10 +415,21 @@ export class GatewayServer {
 
   private transformStream(
     text: string,
-    clientProtocol: LlmProtocol,
+    clientRoute: ClientRoute,
     providerProtocol: LlmProtocol,
     converted: ConvertedRequest
   ): StreamTransform {
+    if (clientRoute.endpoint === "responses") {
+      const lines = text.split(/\r?\n/);
+      return {
+        body: text,
+        providerLog: { sse: lines },
+        clientLog: { sse: lines },
+        streamEvents: lines
+      };
+    }
+
+    const clientProtocol = clientRoute.protocol;
     const responseModel = converted.clientModel || converted.providerModel;
 
     if (providerProtocol === "openai") {
@@ -396,16 +517,27 @@ export class GatewayServer {
     return token === config.localToken || apiKey === config.localToken;
   }
 
-  private clientProtocol(req: IncomingMessage): LlmProtocol | undefined {
-    if (req.method !== "POST") return undefined;
-    const path = req.url?.split("?")[0];
-    if (path === "/v1/messages") return "anthropic";
-    if (path === "/v1/chat/completions") return "openai";
-    return undefined;
+  private isModelsRequest(req: IncomingMessage): boolean {
+    return req.method === "GET" && req.url?.split("?")[0] === "/v1/models";
   }
 
-  private defaultPath(protocol: LlmProtocol): string {
-    return protocol === "anthropic" ? "/v1/messages" : "/v1/chat/completions";
+  private modelDetailsId(req: IncomingMessage): string | undefined {
+    if (req.method !== "GET") return undefined;
+    const path = req.url?.split("?")[0] ?? "";
+    const prefix = "/v1/models/";
+    if (!path.startsWith(prefix)) return undefined;
+    const encodedId = path.slice(prefix.length);
+    if (!encodedId || encodedId.includes("/")) return undefined;
+    return decodeURIComponent(encodedId);
+  }
+
+  private clientRoute(req: IncomingMessage): ClientRoute | undefined {
+    if (req.method !== "POST") return undefined;
+    const path = req.url?.split("?")[0];
+    if (path === "/v1/messages") return { protocol: "anthropic", endpoint: "messages", path };
+    if (path === "/v1/chat/completions") return { protocol: "openai", endpoint: "chatCompletions", path };
+    if (path === "/v1/responses") return { protocol: "openai", endpoint: "responses", path };
+    return undefined;
   }
 
   private finish(log: LogEntry, started: number, config: GatewayConfig): void {
@@ -447,6 +579,12 @@ export class GatewayServer {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   }
+
+  private writeJson(res: ServerResponse, status: number, body: unknown): void {
+    if (res.headersSent) return;
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  }
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -470,7 +608,8 @@ function requestModel(body: unknown): string | undefined {
   return body && typeof body === "object" ? String((body as { model?: unknown }).model ?? "") : undefined;
 }
 
-function providerUrl(provider: ProviderConfig, protocol: LlmProtocol): string {
+function providerUrl(provider: ProviderConfig, protocol: LlmProtocol, endpoint: ProviderEndpoint): string {
+  if (endpoint === "responses") return providerResponsesUrl(provider.baseUrl);
   return protocol === "anthropic"
     ? providerMessagesUrl(provider.baseUrl)
     : providerChatCompletionsUrl(provider.baseUrl);
@@ -491,11 +630,73 @@ function providerHeaders(provider: ProviderConfig, protocol: LlmProtocol): Recor
   };
 }
 
-function prepareProviderRequest(provider: ProviderConfig, protocol: LlmProtocol, body: unknown): PreparedProviderRequest {
+function prepareProviderRequest(provider: ProviderConfig, protocol: LlmProtocol, endpoint: ProviderEndpoint, body: unknown): PreparedProviderRequest {
   return {
-    url: providerUrl(provider, protocol),
+    url: providerUrl(provider, protocol, endpoint),
     headers: providerHeaders(provider, protocol),
     body: JSON.stringify(body)
+  };
+}
+
+export function listenerAddressChanged(previous: GatewayConfig, next: GatewayConfig): boolean {
+  return previous.host !== next.host || previous.port !== next.port;
+}
+
+export function modelsResponse(config: GatewayConfig, format: ModelsResponseFormat = "openai"): unknown {
+  const ids = Object.keys(config.modelMappings).sort();
+
+  if (format === "anthropic") {
+    return {
+      data: ids.map((id) => anthropicModelInfo(id)),
+      first_id: ids[0] ?? null,
+      has_more: false,
+      last_id: ids.at(-1) ?? null
+    };
+  }
+
+  return {
+    object: "list",
+    data: ids.map((id) => openAIModelInfo(id))
+  };
+}
+
+export function modelResponse(config: GatewayConfig, id: string, format: ModelsResponseFormat = "openai"): unknown | undefined {
+  if (!Object.prototype.hasOwnProperty.call(config.modelMappings, id)) return undefined;
+  return format === "anthropic" ? anthropicModelInfo(id) : openAIModelInfo(id);
+}
+
+export function modelsResponseFormat(req: Pick<IncomingMessage, "headers" | "url">): ModelsResponseFormat {
+  const url = new URL(req.url ?? "", "http://localhost");
+  const explicitFormat = url.searchParams.get("format")?.toLowerCase();
+  if (explicitFormat === "anthropic") return "anthropic";
+  if (explicitFormat === "openai") return "openai";
+
+  if (hasHeaderValue(req.headers["anthropic-version"])) return "anthropic";
+  if (hasHeaderValue(req.headers["x-api-key"]) && !hasHeaderValue(req.headers.authorization)) return "anthropic";
+
+  return "openai";
+}
+
+function hasHeaderValue(value: RawHeaderValue): boolean {
+  if (Array.isArray(value)) return value.some((item) => item.trim() !== "");
+  return value !== undefined && String(value).trim() !== "";
+}
+
+function openAIModelInfo(id: string): unknown {
+  return {
+    id,
+    object: "model",
+    created: 0,
+    owned_by: "llm-gateway"
+  };
+}
+
+function anthropicModelInfo(id: string): unknown {
+  return {
+    id,
+    type: "model",
+    display_name: id,
+    created_at: "1970-01-01T00:00:00Z"
   };
 }
 

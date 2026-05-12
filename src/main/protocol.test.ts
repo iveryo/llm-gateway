@@ -12,7 +12,8 @@ import {
   openAIStreamToJson,
   openAIToAnthropic
 } from "./protocol.js";
-import { providerChatCompletionsUrl, providerMessagesUrl } from "./provider.js";
+import { listenerAddressChanged, modelResponse, modelsResponse, modelsResponseFormat } from "./gateway.js";
+import { providerChatCompletionsUrl, providerMessagesUrl, providerResponsesUrl } from "./provider.js";
 
 const config: GatewayConfig = {
   ...DEFAULT_CONFIG,
@@ -196,6 +197,9 @@ describe("protocol conversion", () => {
       "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
     );
     expect(providerChatCompletionsUrl("https://api.example.com/openai/v2/")).toBe("https://api.example.com/openai/v2/chat/completions");
+    expect(providerChatCompletionsUrl("https://api.example.com/custom/responses")).toBe(
+      "https://api.example.com/custom/chat/completions"
+    );
     expect(providerChatCompletionsUrl("https://api.example.com/custom/chat/completions")).toBe(
       "https://api.example.com/custom/chat/completions"
     );
@@ -206,6 +210,66 @@ describe("protocol conversion", () => {
     expect(providerMessagesUrl("https://api.anthropic.com/v1")).toBe("https://api.anthropic.com/v1/messages");
     expect(providerMessagesUrl("https://api.example.com/custom/v2/")).toBe("https://api.example.com/custom/v2/messages");
     expect(providerMessagesUrl("https://api.example.com/custom/messages")).toBe("https://api.example.com/custom/messages");
+  });
+
+  it("builds OpenAI responses URLs without duplicating version paths", () => {
+    expect(providerResponsesUrl("https://api.example.com")).toBe("https://api.example.com/v1/responses");
+    expect(providerResponsesUrl("https://api.example.com/v1")).toBe("https://api.example.com/v1/responses");
+    expect(providerResponsesUrl("https://api.example.com/custom/v2/")).toBe("https://api.example.com/custom/v2/responses");
+    expect(providerResponsesUrl("https://api.example.com/custom/chat/completions")).toBe("https://api.example.com/custom/responses");
+    expect(providerResponsesUrl("https://api.example.com/custom/responses")).toBe("https://api.example.com/custom/responses");
+  });
+
+  it("lists only configured inbound model mappings for /v1/models", () => {
+    expect(modelsResponse(config)).toEqual({
+      object: "list",
+      data: [
+        { id: "claude-test", object: "model", created: 0, owned_by: "llm-gateway" },
+        { id: "gpt-test", object: "model", created: 0, owned_by: "llm-gateway" }
+      ]
+    });
+  });
+
+  it("lists configured model mappings in Anthropic models format", () => {
+    expect(modelsResponse(config, "anthropic")).toEqual({
+      data: [
+        { id: "claude-test", type: "model", display_name: "claude-test", created_at: "1970-01-01T00:00:00Z" },
+        { id: "gpt-test", type: "model", display_name: "gpt-test", created_at: "1970-01-01T00:00:00Z" }
+      ],
+      first_id: "claude-test",
+      has_more: false,
+      last_id: "gpt-test"
+    });
+  });
+
+  it("retrieves one configured model mapping by id", () => {
+    expect(modelResponse(config, "claude-test")).toEqual({
+      id: "claude-test",
+      object: "model",
+      created: 0,
+      owned_by: "llm-gateway"
+    });
+    expect(modelResponse(config, "claude-test", "anthropic")).toEqual({
+      id: "claude-test",
+      type: "model",
+      display_name: "claude-test",
+      created_at: "1970-01-01T00:00:00Z"
+    });
+    expect(modelResponse(config, "missing-model", "anthropic")).toBeUndefined();
+  });
+
+  it("detects /v1/models response format from query parameters and headers", () => {
+    expect(modelsResponseFormat({ url: "/v1/models", headers: { authorization: "Bearer token" } })).toBe("openai");
+    expect(modelsResponseFormat({ url: "/v1/models?format=anthropic", headers: { authorization: "Bearer token" } })).toBe("anthropic");
+    expect(modelsResponseFormat({ url: "/v1/models?format=openai", headers: { "x-api-key": "token" } })).toBe("openai");
+    expect(modelsResponseFormat({ url: "/v1/models", headers: { "anthropic-version": "2023-06-01", authorization: "Bearer token" } })).toBe("anthropic");
+    expect(modelsResponseFormat({ url: "/v1/models", headers: { "x-api-key": "token" } })).toBe("anthropic");
+  });
+
+  it("requires listener restart only when host or port changes", () => {
+    expect(listenerAddressChanged(config, { ...config, defaultModel: "other-model" })).toBe(false);
+    expect(listenerAddressChanged(config, { ...config, host: "0.0.0.0" })).toBe(true);
+    expect(listenerAddressChanged(config, { ...config, port: 4567 })).toBe(true);
   });
 
   it("converts OpenAI SSE chunks to Anthropic SSE events", () => {

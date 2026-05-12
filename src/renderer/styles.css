@@ -1137,15 +1137,55 @@ p {
   display: none;
 }
 
-.configError {
-  max-width: min(620px, 100%);
+.configToastLayer {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(620px, calc(100vw - 36px));
+  z-index: 4;
+  pointer-events: none;
+}
+
+.configToast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-height: min(180px, calc(100vh - 140px));
   border: 1px solid #efc9c4;
   border-radius: 6px;
+  box-shadow: 0 12px 28px rgba(57, 20, 15, 0.16);
   background: #fff8f7;
   color: #9f1f16;
-  padding: 8px 10px;
+  padding: 10px 10px 10px 12px;
   font-size: 13px;
+  line-height: 1.4;
+  overflow: auto;
+  pointer-events: auto;
+}
+
+.configToastMessage {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.configToastClose {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #9f1f16;
+  cursor: pointer;
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0;
+}
+
+.configToastClose:hover {
+  background: #ffe5e2;
 }
 
 .configSection {
@@ -1327,6 +1367,12 @@ p {
 
   .configActions {
     justify-content: flex-start;
+  }
+
+  .configToastLayer {
+    left: 0;
+    right: 0;
+    width: auto;
   }
 
   .configSection {

@@ -6,7 +6,7 @@ LLM Gateway is a local Electron app for routing OpenAI Chat Completions and Anth
 
 Supported protocol paths:
 
-- `openai -> openai`: transparent proxy for `POST /v1/chat/completions`.
+- `openai -> openai`: transparent proxy for `POST /v1/chat/completions` and `POST /v1/responses`.
 - `anthropic -> anthropic`: transparent proxy for `POST /v1/messages`.
 - `anthropic -> openai`: Anthropic Messages request/response adaptation to OpenAI Chat Completions.
 - `openai -> anthropic`: OpenAI Chat Completions request/response adaptation to Anthropic Messages.
@@ -67,6 +67,16 @@ OpenAI-compatible clients should use:
 POST http://127.0.0.1:3456/v1/chat/completions
 ```
 
+Responses-compatible clients, including Codex CLI, can use:
+
+```text
+POST http://127.0.0.1:3456/v1/responses
+GET http://127.0.0.1:3456/v1/models
+GET http://127.0.0.1:3456/v1/models/{model_id}
+```
+
+Model endpoints return only the configured inbound `modelMappings`. They default to the OpenAI models schema, return the Anthropic models schema when Anthropic headers such as `anthropic-version` or `X-Api-Key` are used, and can be forced with `?format=openai` or `?format=anthropic`.
+
 Local gateway authentication accepts either:
 
 - `Authorization: Bearer <localToken>`
@@ -126,6 +136,10 @@ Base URL handling for OpenAI providers:
 - `https://api.example.com/v1` becomes `https://api.example.com/v1/chat/completions`
 - `https://ark.cn-beijing.volces.com/api/coding/v3` becomes `https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions`
 - A URL already ending in `/chat/completions` is used directly.
+
+Responses requests use the same OpenAI provider configuration, but the upstream URL ends in `/responses` instead of `/chat/completions`. Responses requests require an OpenAI-compatible provider and are not converted to Anthropic Messages.
+
+The local model endpoints, `GET /v1/models` and `GET /v1/models/{model_id}`, return only the inbound model names configured in `modelMappings`.
 
 Base URL handling for Anthropic providers:
 
@@ -212,7 +226,8 @@ This project can be packaged with Electron tooling. See [PACKAGING.md](PACKAGING
 
 ## Notes
 
-- OpenAI input currently supports `POST /v1/chat/completions`.
+- OpenAI input currently supports `POST /v1/chat/completions` and `POST /v1/responses`.
+- `GET /v1/models` and `GET /v1/models/{model_id}` are local-only and return configured model mappings instead of querying upstream providers. The response schema is selected for OpenAI or Anthropic clients from the request headers, or explicitly with `?format=openai` / `?format=anthropic`.
 - Anthropic input currently supports `POST /v1/messages`.
 - Tool calls and streaming responses are converted between Anthropic and OpenAI-compatible formats on the supported paths.
 - Provider-specific headers beyond the built-in OpenAI and Anthropic authentication headers are not currently configurable.
