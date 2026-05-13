@@ -105,7 +105,13 @@ describe("protocol conversion", () => {
     const response = openAIToAnthropic(
       {
         id: "chatcmpl_1",
-        choices: [{ finish_reason: "tool_calls", message: { tool_calls: [{ id: "call_1", function: { name: "search", arguments: "{\"q\":\"x\"}" } }] } }],
+        choices: [{
+          finish_reason: "tool_calls",
+          message: {
+            reasoning_content: "Need to search.",
+            tool_calls: [{ id: "call_1", function: { name: "search", arguments: "{\"q\":\"x\"}" } }]
+          }
+        }],
         usage: { prompt_tokens: 12, completion_tokens: 4 }
       },
       "provider-test"
@@ -116,7 +122,10 @@ describe("protocol conversion", () => {
       model: "provider-test",
       stop_reason: "tool_use",
       usage: { input_tokens: 12, output_tokens: 4 },
-      content: [{ type: "tool_use", id: "call_1", name: "search", input: { q: "x" } }]
+      content: [
+        { type: "thinking", thinking: "Need to search." },
+        { type: "tool_use", id: "call_1", name: "search", input: { q: "x" } }
+      ]
     });
   });
 
@@ -275,6 +284,8 @@ describe("protocol conversion", () => {
   it("converts OpenAI SSE chunks to Anthropic SSE events", () => {
     const events = openAIStreamToAnthropicEvents(
       [
+        'data: {"choices":[{"delta":{"reasoning_content":"Think"}}]}',
+        'data: {"choices":[{"delta":{"reasoning_content":" first."}}]}',
         'data: {"choices":[{"delta":{"content":"Hel"}}]}',
         'data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}',
         "data: [DONE]"
@@ -288,13 +299,27 @@ describe("protocol conversion", () => {
       "content_block_delta",
       "content_block_delta",
       "content_block_stop",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_delta",
+      "content_block_stop",
       "message_delta",
       "message_stop"
     ]);
+
+    expect(events[1]).toMatchObject({ data: { index: 0, content_block: { type: "thinking", thinking: "" } } });
+    expect(events[2]).toMatchObject({ data: { index: 0, delta: { type: "thinking_delta", thinking: "Think" } } });
+    expect(events[3]).toMatchObject({ data: { index: 0, delta: { type: "thinking_delta", thinking: " first." } } });
+    expect(events[4]).toMatchObject({ data: { index: 0 } });
+    expect(events[5]).toMatchObject({ data: { index: 1, content_block: { type: "text", text: "" } } });
+    expect(events[6]).toMatchObject({ data: { index: 1, delta: { type: "text_delta", text: "Hel" } } });
+    expect(events[7]).toMatchObject({ data: { index: 1, delta: { type: "text_delta", text: "lo" } } });
   });
 
   it("aggregates OpenAI SSE chunks into provider and Anthropic JSON logs", () => {
     const lines = [
+      'data: {"id":"chatcmpl_1","model":"provider-test","choices":[{"delta":{"reasoning_content":"Think"}}]}',
+      'data: {"id":"chatcmpl_1","model":"provider-test","choices":[{"delta":{"reasoning_content":" first."}}]}',
       'data: {"id":"chatcmpl_1","model":"provider-test","choices":[{"delta":{"content":"Hel"}}]}',
       'data: {"id":"chatcmpl_1","model":"provider-test","choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}',
       "data: [DONE]"
@@ -305,11 +330,14 @@ describe("protocol conversion", () => {
     expect(providerJson).toMatchObject({
       id: "chatcmpl_1",
       model: "provider-test",
-      choices: [{ message: { role: "assistant", content: "Hello" }, finish_reason: "stop" }]
+      choices: [{ message: { role: "assistant", reasoning_content: "Think first.", content: "Hello" }, finish_reason: "stop" }]
     });
     expect(anthropicMessage).toMatchObject({
       model: "claude-test",
-      content: [{ type: "text", text: "Hello" }],
+      content: [
+        { type: "thinking", thinking: "Think first." },
+        { type: "text", text: "Hello" }
+      ],
       stop_reason: "end_turn"
     });
   });

@@ -1,5 +1,6 @@
 import { BrowserWindow } from "electron";
 import http, { IncomingMessage, ServerResponse, STATUS_CODES } from "node:http";
+import { once } from "node:events";
 import { GatewayConfig, GatewayRuntimeState, GatewayStatus, LlmProtocol, LogEntry, ProviderConfig } from "../shared/types.js";
 import { ConfigStore } from "./config.js";
 import { LogStore } from "./store.js";
@@ -49,6 +50,37 @@ type StreamTransform = {
   providerLog: unknown;
   clientLog: unknown;
   streamEvents?: unknown[];
+};
+
+type StreamProxyResult = {
+  providerBody: string;
+  clientBody: string;
+  transformed: StreamTransform;
+};
+
+type OpenAIToAnthropicStreamState = {
+  messageStart: any;
+  started: boolean;
+  thinkingBlockOpen: boolean;
+  thinkingIndex: number;
+  textBlockOpen: boolean;
+  textIndex: number;
+  toolCalls: Map<number, { id: string; name: string; arguments: string; index: number }>;
+  nextBlockIndex: number;
+  stopReason: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  stopped: boolean;
+};
+
+type AnthropicToOpenAIStreamState = {
+  id: string;
+  created: number;
+  promptTokens: number;
+  completionTokens: number;
+  nextToolIndex: number;
+  toolIndexes: Map<number, number>;
+  done: boolean;
 };
 
 type PreparedProviderRequest = {
@@ -268,8 +300,34 @@ export class GatewayServer {
       log.queueWaitMs = queued.waitMs;
       this.saveAndNotify(log, config);
       const providerResponse = queued.value;
-      const text = await providerResponse.text();
       log.statusCode = providerResponse.status;
+
+      if ((clientRequest as any).stream && providerResponse.ok) {
+        const proxied = await this.proxyStream(providerResponse, res, clientRoute, providerProtocol, converted);
+        log.status = "ok";
+        log.providerResponseRaw = formatHttpMessage(
+          formatHttpResponseLine(providerResponse.status, providerResponse.statusText),
+          redactedHeaders(headersFromFetchResponse(providerResponse.headers), config),
+          rawSseBodyForLog(proxied.providerBody, config)
+        );
+        log.streamEvents = config.redactSensitive ? (redact(proxied.transformed.streamEvents) as unknown[]) : proxied.transformed.streamEvents;
+        log.providerResponse = config.redactSensitive ? redact(proxied.transformed.providerLog) : proxied.transformed.providerLog;
+        log.clientResponse = config.redactSensitive ? redact(proxied.transformed.clientLog) : proxied.transformed.clientLog;
+        log.anthropicResponse = clientProtocol === "anthropic" ? log.clientResponse : undefined;
+        log.clientResponseRaw = formatHttpMessage(
+          formatHttpResponseLine(200),
+          {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            connection: "keep-alive"
+          },
+          rawSseBodyForLog(proxied.clientBody, config)
+        );
+        this.finish(log, started, config);
+        return;
+      }
+
+      const text = await providerResponse.text();
       log.providerResponseRaw = formatHttpMessage(
         formatHttpResponseLine(providerResponse.status, providerResponse.statusText),
         redactedHeaders(headersFromFetchResponse(providerResponse.headers), config),
@@ -294,45 +352,20 @@ export class GatewayServer {
         return;
       }
 
-      if ((clientRequest as any).stream) {
-        const transformed = this.transformStream(text, clientRoute, providerProtocol, converted);
-        log.status = "ok";
-        log.streamEvents = config.redactSensitive ? (redact(transformed.streamEvents) as unknown[]) : transformed.streamEvents;
-        log.providerResponse = config.redactSensitive ? redact(transformed.providerLog) : transformed.providerLog;
-        log.clientResponse = config.redactSensitive ? redact(transformed.clientLog) : transformed.clientLog;
-        log.anthropicResponse = clientProtocol === "anthropic" ? log.clientResponse : undefined;
-        log.clientResponseRaw = formatHttpMessage(
-          formatHttpResponseLine(200),
-          {
-            "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-cache",
-            connection: "keep-alive"
-          },
-          rawSseBodyForLog(transformed.body, config)
-        );
-        this.finish(log, started, config);
-        res.writeHead(200, {
-          "content-type": "text/event-stream; charset=utf-8",
-          "cache-control": "no-cache",
-          connection: "keep-alive"
-        });
-        res.end(transformed.body);
-      } else {
-        const providerJson = JSON.parse(text);
-        const clientJson = this.transformJson(providerJson, clientRoute, providerProtocol, converted);
-        log.status = "ok";
-        log.providerResponse = config.redactSensitive ? redact(providerJson) : providerJson;
-        log.clientResponse = config.redactSensitive ? redact(clientJson) : clientJson;
-        log.anthropicResponse = clientProtocol === "anthropic" ? log.clientResponse : undefined;
-        log.clientResponseRaw = formatHttpMessage(
-          formatHttpResponseLine(200),
-          { "content-type": "application/json" },
-          JSON.stringify(config.redactSensitive ? redact(clientJson) : clientJson)
-        );
-        this.finish(log, started, config);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(clientJson));
-      }
+      const providerJson = JSON.parse(text);
+      const clientJson = this.transformJson(providerJson, clientRoute, providerProtocol, converted);
+      log.status = "ok";
+      log.providerResponse = config.redactSensitive ? redact(providerJson) : providerJson;
+      log.clientResponse = config.redactSensitive ? redact(clientJson) : clientJson;
+      log.anthropicResponse = clientProtocol === "anthropic" ? log.clientResponse : undefined;
+      log.clientResponseRaw = formatHttpMessage(
+        formatHttpResponseLine(200),
+        { "content-type": "application/json" },
+        JSON.stringify(config.redactSensitive ? redact(clientJson) : clientJson)
+      );
+      this.finish(log, started, config);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(clientJson));
     } catch (error) {
       log.status = "error";
       log.error = error instanceof Error ? error.message : String(error);
@@ -476,6 +509,106 @@ export class GatewayServer {
       clientLog: { json: openAIStreamToJson(body.split(/\r?\n/)), sse: chunks },
       streamEvents: chunks
     };
+  }
+
+  private async proxyStream(
+    providerResponse: Response,
+    res: ServerResponse,
+    clientRoute: ClientRoute,
+    providerProtocol: LlmProtocol,
+    converted: ConvertedRequest
+  ): Promise<StreamProxyResult> {
+    if (!providerResponse.body) {
+      throw new Error("Provider stream response did not include a readable body");
+    }
+
+    const providerChunks: string[] = [];
+    const clientChunks: string[] = [];
+    const decoder = new TextDecoder();
+    const reader = providerResponse.body.getReader();
+    const splitter = createSseFrameSplitter();
+    const responseModel = converted.clientModel || converted.providerModel;
+    const transformFrame = this.streamFrameTransformer(clientRoute, providerProtocol, responseModel);
+
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache",
+      connection: "keep-alive"
+    });
+    res.flushHeaders?.();
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        if (!text) continue;
+        providerChunks.push(text);
+        for (const frame of splitter.push(text)) {
+          await this.writeStreamFrames(res, transformFrame(frame), clientChunks);
+        }
+      }
+
+      const tail = decoder.decode();
+      if (tail) {
+        providerChunks.push(tail);
+        for (const frame of splitter.push(tail)) {
+          await this.writeStreamFrames(res, transformFrame(frame), clientChunks);
+        }
+      }
+
+      const finalFrame = splitter.flush();
+      if (finalFrame !== undefined) {
+        await this.writeStreamFrames(res, transformFrame(finalFrame), clientChunks);
+      }
+      await this.writeStreamFrames(res, transformFrame(undefined), clientChunks);
+      if (!res.writableEnded) res.end();
+
+      const providerBody = providerChunks.join("");
+      const clientBody = clientChunks.join("");
+      return {
+        providerBody,
+        clientBody,
+        transformed: this.transformStream(providerBody, clientRoute, providerProtocol, converted)
+      };
+    } catch (error) {
+      if (!res.writableEnded) res.end();
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  private streamFrameTransformer(
+    clientRoute: ClientRoute,
+    providerProtocol: LlmProtocol,
+    responseModel: string
+  ): (frame: string | undefined) => string[] {
+    if (clientRoute.endpoint === "responses") {
+      return (frame) => frame === undefined ? [] : [frame];
+    }
+
+    const clientProtocol = clientRoute.protocol;
+    if (clientProtocol === providerProtocol) {
+      return (frame) => frame === undefined ? [] : [frame];
+    }
+
+    if (providerProtocol === "openai") {
+      const state = createOpenAIToAnthropicStreamState(responseModel);
+      return (frame) => transformOpenAIFrameToAnthropicSse(frame, state);
+    }
+
+    const state = createAnthropicToOpenAIStreamState(responseModel);
+    return (frame) => transformAnthropicFrameToOpenAISse(frame, state, responseModel);
+  }
+
+  private async writeStreamFrames(res: ServerResponse, frames: string[], clientChunks: string[]): Promise<void> {
+    for (const frame of frames) {
+      clientChunks.push(frame);
+      if (!res.write(frame)) {
+        await once(res, "drain");
+      }
+    }
   }
 
   private async callProvider(config: GatewayConfig, request: PreparedProviderRequest): Promise<Response> {
@@ -770,6 +903,335 @@ function rawSseBodyForLog(rawBody: string, config: GatewayConfig): string {
       return parsed === undefined ? line : `data: ${stringifyForHttpBody(redact(parsed))}`;
     })
     .join("\n");
+}
+
+function createSseFrameSplitter(): { push: (chunk: string) => string[]; flush: () => string | undefined } {
+  let buffer = "";
+  const split = (): string[] => {
+    const frames: string[] = [];
+    while (true) {
+      const delimiter = sseFrameDelimiter(buffer);
+      if (!delimiter) break;
+      const frame = buffer.slice(0, delimiter.index + delimiter.length);
+      buffer = buffer.slice(delimiter.index + delimiter.length);
+      frames.push(frame);
+    }
+    return frames;
+  };
+
+  return {
+    push: (chunk) => {
+      buffer += chunk;
+      return split();
+    },
+    flush: () => {
+      if (!buffer) return undefined;
+      const frame = buffer;
+      buffer = "";
+      return frame;
+    }
+  };
+}
+
+function sseFrameDelimiter(value: string): { index: number; length: number } | undefined {
+  const lf = value.indexOf("\n\n");
+  const crlf = value.indexOf("\r\n\r\n");
+  if (lf === -1) return crlf === -1 ? undefined : { index: crlf, length: 4 };
+  if (crlf === -1) return { index: lf, length: 2 };
+  return lf < crlf ? { index: lf, length: 2 } : { index: crlf, length: 4 };
+}
+
+function createOpenAIToAnthropicStreamState(responseModel: string): OpenAIToAnthropicStreamState {
+  const messageStart = {
+    event: "message_start",
+    data: {
+      type: "message_start",
+      message: {
+        id: `msg_${crypto.randomUUID()}`,
+        type: "message",
+        role: "assistant",
+        model: responseModel,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 }
+      }
+    }
+  };
+
+  return {
+    messageStart,
+    started: false,
+    thinkingBlockOpen: false,
+    thinkingIndex: 0,
+    textBlockOpen: false,
+    textIndex: 0,
+    toolCalls: new Map(),
+    nextBlockIndex: 0,
+    stopReason: null,
+    inputTokens: 0,
+    outputTokens: 0,
+    stopped: false
+  };
+}
+
+function transformOpenAIFrameToAnthropicSse(frame: string | undefined, state: OpenAIToAnthropicStreamState): string[] {
+  if (frame === undefined) return finishOpenAIToAnthropicStream(state).map(formatAnthropicSseEvent);
+
+  const output: any[] = startOpenAIToAnthropicStream(state);
+  for (const line of frame.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload) continue;
+    if (payload === "[DONE]") {
+      output.push(...finishOpenAIToAnthropicStream(state));
+      continue;
+    }
+
+    const chunk = JSON.parse(payload);
+    if (chunk.usage) {
+      state.inputTokens = numberValue(chunk.usage.prompt_tokens) ?? state.inputTokens;
+      state.outputTokens = numberValue(chunk.usage.completion_tokens) ?? state.outputTokens;
+    }
+    const choice = chunk.choices?.[0];
+    const delta = choice?.delta ?? {};
+    if (choice?.finish_reason) state.stopReason = finishReasonToAnthropic(choice.finish_reason);
+
+    if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+      if (!state.thinkingBlockOpen) {
+        state.thinkingIndex = state.nextBlockIndex++;
+        state.thinkingBlockOpen = true;
+        output.push({
+          event: "content_block_start",
+          data: { type: "content_block_start", index: state.thinkingIndex, content_block: { type: "thinking", thinking: "" } }
+        });
+      }
+      output.push({
+        event: "content_block_delta",
+        data: { type: "content_block_delta", index: state.thinkingIndex, delta: { type: "thinking_delta", thinking: delta.reasoning_content } }
+      });
+    }
+
+    if (typeof delta.content === "string" && delta.content.length > 0) {
+      output.push(...stopOpenAIThinkingBlock(state));
+      if (!state.textBlockOpen) {
+        state.textIndex = state.nextBlockIndex++;
+        state.textBlockOpen = true;
+        output.push({
+          event: "content_block_start",
+          data: { type: "content_block_start", index: state.textIndex, content_block: { type: "text", text: "" } }
+        });
+      }
+      output.push({
+        event: "content_block_delta",
+        data: { type: "content_block_delta", index: state.textIndex, delta: { type: "text_delta", text: delta.content } }
+      });
+    }
+
+    for (const call of delta.tool_calls ?? []) {
+      output.push(...stopOpenAIThinkingBlock(state));
+      const index = call.index ?? 0;
+      const existing = state.toolCalls.get(index);
+      if (!existing) {
+        const blockIndex = state.nextBlockIndex++;
+        const created = {
+          id: call.id ?? `call_${crypto.randomUUID()}`,
+          name: call.function?.name ?? "",
+          arguments: call.function?.arguments ?? "",
+          index: blockIndex
+        };
+        state.toolCalls.set(index, created);
+        output.push({
+          event: "content_block_start",
+          data: {
+            type: "content_block_start",
+            index: blockIndex,
+            content_block: { type: "tool_use", id: created.id, name: created.name, input: {} }
+          }
+        });
+        if (created.arguments) output.push(toolInputDelta(blockIndex, created.arguments));
+      } else {
+        if (call.function?.name) existing.name += call.function.name;
+        if (call.function?.arguments) {
+          existing.arguments += call.function.arguments;
+          output.push(toolInputDelta(existing.index, call.function.arguments));
+        }
+      }
+    }
+  }
+
+  return output.map(formatAnthropicSseEvent);
+}
+
+function stopOpenAIThinkingBlock(state: OpenAIToAnthropicStreamState): any[] {
+  if (!state.thinkingBlockOpen) return [];
+  state.thinkingBlockOpen = false;
+  return [{ event: "content_block_stop", data: { type: "content_block_stop", index: state.thinkingIndex } }];
+}
+
+function startOpenAIToAnthropicStream(state: OpenAIToAnthropicStreamState): any[] {
+  if (state.started) return [];
+  state.started = true;
+  return [state.messageStart];
+}
+
+function finishOpenAIToAnthropicStream(state: OpenAIToAnthropicStreamState): any[] {
+  if (state.stopped) return [];
+  state.stopped = true;
+  const output = [...startOpenAIToAnthropicStream(state), ...stopOpenAIThinkingBlock(state)];
+  if (state.textBlockOpen) {
+    output.push({ event: "content_block_stop", data: { type: "content_block_stop", index: state.textIndex } });
+  }
+  for (const call of state.toolCalls.values()) {
+    output.push({ event: "content_block_stop", data: { type: "content_block_stop", index: call.index } });
+  }
+  output.push({
+    event: "message_delta",
+    data: {
+      type: "message_delta",
+      delta: { stop_reason: state.stopReason ?? "end_turn", stop_sequence: null },
+      usage: { output_tokens: state.outputTokens }
+    }
+  });
+  output.push({ event: "message_stop", data: { type: "message_stop" } });
+  return output;
+}
+
+function createAnthropicToOpenAIStreamState(responseModel: string): AnthropicToOpenAIStreamState {
+  return {
+    id: `chatcmpl_${crypto.randomUUID()}`,
+    created: Math.floor(Date.now() / 1000),
+    promptTokens: 0,
+    completionTokens: 0,
+    nextToolIndex: 0,
+    toolIndexes: new Map(),
+    done: false
+  };
+}
+
+function transformAnthropicFrameToOpenAISse(
+  frame: string | undefined,
+  state: AnthropicToOpenAIStreamState,
+  responseModel: string
+): string[] {
+  if (frame === undefined) return finishAnthropicToOpenAIStream(state, responseModel);
+
+  const chunks: unknown[] = [];
+  const event = anthropicStreamToEvents(frame.split(/\r?\n/))[0] as any;
+  if (!event) return [];
+
+  if (event.event === "message_start") {
+    const message = event.data?.message ?? {};
+    state.id = message.id ? `chatcmpl_${message.id}` : state.id;
+    state.promptTokens = numberValue(message.usage?.input_tokens) ?? state.promptTokens;
+    chunks.push(openAIChunk(state.id, state.created, responseModel, { role: "assistant" }, null));
+  }
+
+  if (event.event === "content_block_start") {
+    const block = event.data?.content_block;
+    if (block?.type === "tool_use") {
+      const toolIndex = state.nextToolIndex++;
+      state.toolIndexes.set(event.data.index, toolIndex);
+      chunks.push(openAIChunk(state.id, state.created, responseModel, {
+        tool_calls: [{
+          index: toolIndex,
+          id: block.id ?? `call_${crypto.randomUUID()}`,
+          type: "function",
+          function: { name: block.name ?? "", arguments: "" }
+        }]
+      }, null));
+    }
+  }
+
+  if (event.event === "content_block_delta") {
+    const delta = event.data?.delta;
+    if (delta?.type === "text_delta") {
+      chunks.push(openAIChunk(state.id, state.created, responseModel, { content: delta.text ?? "" }, null));
+    }
+    if (delta?.type === "input_json_delta") {
+      const toolIndex = state.toolIndexes.get(event.data.index) ?? 0;
+      chunks.push(openAIChunk(state.id, state.created, responseModel, {
+        tool_calls: [{
+          index: toolIndex,
+          function: { arguments: delta.partial_json ?? "" }
+        }]
+      }, null));
+    }
+  }
+
+  if (event.event === "message_delta") {
+    const finishReason = anthropicStopReasonToOpenAI(event.data?.delta?.stop_reason);
+    state.completionTokens = numberValue(event.data?.usage?.output_tokens) ?? state.completionTokens;
+    chunks.push(openAIChunk(state.id, state.created, responseModel, {}, finishReason));
+  }
+
+  if (event.event === "message_stop") {
+    return [...chunks.map(formatOpenAISseChunk), ...finishAnthropicToOpenAIStream(state, responseModel)];
+  }
+
+  return chunks.map(formatOpenAISseChunk);
+}
+
+function finishAnthropicToOpenAIStream(state: AnthropicToOpenAIStreamState, responseModel: string): string[] {
+  if (state.done) return [];
+  state.done = true;
+  return [
+    formatOpenAISseChunk({
+      id: state.id,
+      object: "chat.completion.chunk",
+      created: state.created,
+      model: responseModel,
+      choices: [],
+      usage: {
+        prompt_tokens: state.promptTokens,
+        completion_tokens: state.completionTokens,
+        total_tokens: state.promptTokens + state.completionTokens
+      }
+    }),
+    "data: [DONE]\n\n"
+  ];
+}
+
+function formatAnthropicSseEvent(event: any): string {
+  return `event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`;
+}
+
+function formatOpenAISseChunk(chunk: unknown): string {
+  return `data: ${JSON.stringify(chunk)}\n\n`;
+}
+
+function finishReasonToAnthropic(reason: string | null | undefined): string {
+  if (reason === "tool_calls") return "tool_use";
+  if (reason === "length") return "max_tokens";
+  if (reason === "content_filter") return "stop_sequence";
+  return "end_turn";
+}
+
+function anthropicStopReasonToOpenAI(reason: string | null | undefined): string {
+  if (reason === "tool_use") return "tool_calls";
+  if (reason === "max_tokens") return "length";
+  return "stop";
+}
+
+function toolInputDelta(index: number, partialJson: string) {
+  return {
+    event: "content_block_delta",
+    data: { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: partialJson } }
+  };
+}
+
+function openAIChunk(id: string, created: number, model: string, delta: Record<string, unknown>, finishReason: string | null) {
+  return {
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model,
+    choices: [{ index: 0, delta, finish_reason: finishReason }]
+  };
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function stringifyForHttpBody(value: unknown): string {

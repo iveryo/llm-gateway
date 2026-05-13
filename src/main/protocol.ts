@@ -2,6 +2,7 @@ import { GatewayConfig } from "../shared/types.js";
 
 type AnthropicContentBlock =
   | { type: "text"; text: string }
+  | { type: "thinking"; thinking: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; content?: unknown; is_error?: boolean };
 
@@ -260,6 +261,8 @@ export function openAIStreamToAnthropicEvents(lines: string[], providerModel: st
   };
   const events: unknown[] = [messageStart];
 
+  let thinkingBlockOpen = false;
+  let thinkingIndex = 0;
   let textBlockOpen = false;
   let textIndex = 0;
   const toolCalls = new Map<number, { id: string; name: string; arguments: string; index: number }>();
@@ -267,6 +270,12 @@ export function openAIStreamToAnthropicEvents(lines: string[], providerModel: st
   let stopReason: string | null = null;
   let inputTokens = 0;
   let outputTokens = 0;
+
+  const stopThinkingBlock = () => {
+    if (!thinkingBlockOpen) return;
+    events.push({ event: "content_block_stop", data: { type: "content_block_stop", index: thinkingIndex } });
+    thinkingBlockOpen = false;
+  };
 
   for (const line of lines) {
     if (!line.startsWith("data:")) continue;
@@ -282,7 +291,23 @@ export function openAIStreamToAnthropicEvents(lines: string[], providerModel: st
     const delta = choice?.delta ?? {};
     if (choice?.finish_reason) stopReason = finishReasonToAnthropic(choice.finish_reason);
 
+    if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+      if (!thinkingBlockOpen) {
+        thinkingIndex = nextBlockIndex++;
+        thinkingBlockOpen = true;
+        events.push({
+          event: "content_block_start",
+          data: { type: "content_block_start", index: thinkingIndex, content_block: { type: "thinking", thinking: "" } }
+        });
+      }
+      events.push({
+        event: "content_block_delta",
+        data: { type: "content_block_delta", index: thinkingIndex, delta: { type: "thinking_delta", thinking: delta.reasoning_content } }
+      });
+    }
+
     if (typeof delta.content === "string" && delta.content.length > 0) {
+      stopThinkingBlock();
       if (!textBlockOpen) {
         textIndex = nextBlockIndex++;
         textBlockOpen = true;
@@ -298,6 +323,7 @@ export function openAIStreamToAnthropicEvents(lines: string[], providerModel: st
     }
 
     for (const call of delta.tool_calls ?? []) {
+      stopThinkingBlock();
       const index = call.index ?? 0;
       const existing = toolCalls.get(index);
       if (!existing) {
@@ -331,6 +357,7 @@ export function openAIStreamToAnthropicEvents(lines: string[], providerModel: st
   }
 
   messageStart.data.message.usage.input_tokens = inputTokens;
+  stopThinkingBlock();
   if (textBlockOpen) {
     events.push({ event: "content_block_stop", data: { type: "content_block_stop", index: textIndex } });
   }
@@ -429,6 +456,7 @@ export function openAIStreamToJson(lines: string[]) {
   const toolCalls = new Map<number, { id: string; type: "function"; function: { name: string; arguments: string } }>();
   let id = `chatcmpl_${crypto.randomUUID()}`;
   let model = "";
+  let reasoningContent = "";
   let content = "";
   let finishReason: string | null = null;
   let usage: unknown;
@@ -445,6 +473,7 @@ export function openAIStreamToJson(lines: string[]) {
     const choice = chunk.choices?.[0];
     const delta = choice?.delta ?? {};
     if (choice?.finish_reason) finishReason = choice.finish_reason;
+    if (typeof delta.reasoning_content === "string") reasoningContent += delta.reasoning_content;
     if (typeof delta.content === "string") content += delta.content;
 
     for (const call of delta.tool_calls ?? []) {
@@ -468,6 +497,9 @@ export function openAIStreamToJson(lines: string[]) {
   }
 
   const message: Record<string, unknown> = { role: "assistant", content: content || null };
+  if (reasoningContent) {
+    message.reasoning_content = reasoningContent;
+  }
   if (toolCalls.size > 0) {
     message.tool_calls = [...toolCalls.values()];
   }
@@ -542,6 +574,9 @@ export function anthropicEventsToMessage(events: unknown[]) {
       if (!block) continue;
       if (event.data.delta.type === "text_delta") {
         block.text = `${block.text ?? ""}${event.data.delta.text ?? ""}`;
+      }
+      if (event.data.delta.type === "thinking_delta") {
+        block.thinking = `${block.thinking ?? ""}${event.data.delta.thinking ?? ""}`;
       }
       if (event.data.delta.type === "input_json_delta") {
         block._partial_json = `${block._partial_json ?? ""}${event.data.delta.partial_json ?? ""}`;
@@ -664,6 +699,7 @@ function openAIContentToText(content: unknown): string {
 
 function openAIMessageToAnthropicContent(message: any): AnthropicContentBlock[] {
   const blocks: AnthropicContentBlock[] = [];
+  if (message.reasoning_content) blocks.push({ type: "thinking", thinking: String(message.reasoning_content) });
   if (message.content) blocks.push({ type: "text", text: String(message.content) });
   for (const call of message.tool_calls ?? []) {
     blocks.push({
