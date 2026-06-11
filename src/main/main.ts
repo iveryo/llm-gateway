@@ -14,10 +14,29 @@ let isQuitting = false;
 const TRAY_ICON_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABySURBVDhPY1AuqflPCR7WBvQf+v/oPwI82j8VqzrsBkA1H16BzH/9f3E/khooxmpA2P7X//9fXYMhjg1jNaD+KtB6mAErroO9AALYvEGkC6b+XwwUItoA7GFAigEgjBYL/18f+h+GRR1uA4jEowbU/AcAseU8uZxqk1sAAAAASUVORK5CYII=";
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
+
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    void createWindow();
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 async function createWindow(): Promise<void> {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
     return;
   }
 
@@ -57,7 +76,7 @@ function createTray(): void {
     {
       label: "显示 LLM Gateway",
       click: () => {
-        void createWindow();
+        showMainWindow();
       }
     },
     { type: "separator" },
@@ -70,37 +89,43 @@ function createTray(): void {
     }
   ]));
   tray.on("click", () => {
-    void createWindow();
+    showMainWindow();
   });
 }
 
-app.whenReady().then(async () => {
-  configStore = new ConfigStore();
-  logStore = new LogStore();
-  await logStore.init();
-  gateway = new GatewayServer(configStore, logStore, () => mainWindow);
-
-  ipcMain.handle("config:get", () => configStore.get());
-  ipcMain.handle("config:save", async (_event, config) => {
-    const previous = configStore.get();
-    const saved = configStore.save(config);
-    await gateway.applyConfig(previous);
-    return saved;
+if (gotSingleInstanceLock) {
+  app.on("second-instance", () => {
+    showMainWindow();
   });
-  ipcMain.handle("gateway:status", () => gateway.getStatus());
-  ipcMain.handle("logs:list", () => logStore.list());
-  ipcMain.handle("logs:get", (_event, id: string) => logStore.get(id));
-  ipcMain.handle("stats:list", (_event, granularity, groupBy) => logStore.stats(granularity, groupBy));
-  ipcMain.handle("logs:clear", () => logStore.clear());
 
-  await gateway.restart();
-  await createWindow();
-  createTray();
+  app.whenReady().then(async () => {
+    configStore = new ConfigStore();
+    logStore = new LogStore();
+    await logStore.init();
+    gateway = new GatewayServer(configStore, logStore, () => mainWindow);
 
-  app.on("activate", () => {
-    void createWindow();
+    ipcMain.handle("config:get", () => configStore.get());
+    ipcMain.handle("config:save", async (_event, config) => {
+      const previous = configStore.get();
+      const saved = configStore.save(config);
+      await gateway.applyConfig(previous);
+      return saved;
+    });
+    ipcMain.handle("gateway:status", () => gateway.getStatus());
+    ipcMain.handle("logs:list", () => logStore.list());
+    ipcMain.handle("logs:get", (_event, id: string) => logStore.get(id));
+    ipcMain.handle("stats:list", (_event, granularity, groupBy) => logStore.stats(granularity, groupBy));
+    ipcMain.handle("logs:clear", () => logStore.clear());
+
+    await gateway.restart();
+    await createWindow();
+    createTray();
+
+    app.on("activate", () => {
+      showMainWindow();
+    });
   });
-});
+}
 
 app.on("window-all-closed", () => {
   if (isQuitting && process.platform !== "darwin") app.quit();
