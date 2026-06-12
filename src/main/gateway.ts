@@ -267,6 +267,7 @@ export class GatewayServer {
       method: req.method ?? "POST",
       path: req.url ?? clientRoute.path,
       status: "pending",
+      phase: "queued",
       clientProtocol,
       providerProtocol,
       clientModel: converted.clientModel,
@@ -294,78 +295,84 @@ export class GatewayServer {
 
     const started = Date.now();
     try {
-      const queued = await this.queueFor(converted.providerId, provider).run(() =>
-        this.callProvider(config, providerRequest)
+      await this.queueFor(converted.providerId, provider).run(
+        async () => {
+          const providerResponse = await this.callProvider(config, providerRequest);
+          log.statusCode = providerResponse.status;
+
+          if ((clientRequest as any).stream && providerResponse.ok) {
+            const proxied = await this.proxyStream(providerResponse, res, clientRoute, providerProtocol, converted);
+            log.status = "ok";
+            log.providerResponseRaw = formatHttpMessage(
+              formatHttpResponseLine(providerResponse.status, providerResponse.statusText),
+              redactedHeaders(headersFromFetchResponse(providerResponse.headers), config),
+              rawSseBodyForLog(proxied.providerBody, config)
+            );
+            log.streamEvents = config.redactSensitive ? (redact(proxied.transformed.streamEvents) as unknown[]) : proxied.transformed.streamEvents;
+            log.providerResponse = config.redactSensitive ? redact(proxied.transformed.providerLog) : proxied.transformed.providerLog;
+            log.clientResponse = config.redactSensitive ? redact(proxied.transformed.clientLog) : proxied.transformed.clientLog;
+            log.anthropicResponse = clientProtocol === "anthropic" ? log.clientResponse : undefined;
+            log.clientResponseRaw = formatHttpMessage(
+              formatHttpResponseLine(200),
+              {
+                "content-type": "text/event-stream; charset=utf-8",
+                "cache-control": "no-cache",
+                connection: "keep-alive"
+              },
+              rawSseBodyForLog(proxied.clientBody, config)
+            );
+            this.finish(log, started, config);
+            return;
+          }
+
+          const text = await providerResponse.text();
+          log.providerResponseRaw = formatHttpMessage(
+            formatHttpResponseLine(providerResponse.status, providerResponse.statusText),
+            redactedHeaders(headersFromFetchResponse(providerResponse.headers), config),
+            rawProviderResponseBodyForLog(text, config)
+          );
+
+          if (!providerResponse.ok) {
+            const errorBody = tryParseJson(text) ?? { message: text };
+            const providerError = providerErrorMessage(errorBody, providerResponse.statusText);
+            const clientErrorBody = errorBodyForProtocol(providerResponse.status, "api_error", providerError, clientProtocol);
+            log.status = "error";
+            log.error = providerError;
+            log.providerResponse = config.redactSensitive ? redact(errorBody) : errorBody;
+            log.clientResponse = config.redactSensitive ? redact(clientErrorBody) : clientErrorBody;
+            log.clientResponseRaw = formatHttpMessage(
+              formatHttpResponseLine(providerResponse.status),
+              { "content-type": "application/json" },
+              JSON.stringify(config.redactSensitive ? redact(clientErrorBody) : clientErrorBody)
+            );
+            this.finish(log, started, config);
+            this.writeErrorBody(res, providerResponse.status, clientErrorBody);
+            return;
+          }
+
+          const providerJson = JSON.parse(text);
+          const clientJson = this.transformJson(providerJson, clientRoute, providerProtocol, converted);
+          log.status = "ok";
+          log.providerResponse = config.redactSensitive ? redact(providerJson) : providerJson;
+          log.clientResponse = config.redactSensitive ? redact(clientJson) : clientJson;
+          log.anthropicResponse = clientProtocol === "anthropic" ? log.clientResponse : undefined;
+          log.clientResponseRaw = formatHttpMessage(
+            formatHttpResponseLine(200),
+            { "content-type": "application/json" },
+            JSON.stringify(config.redactSensitive ? redact(clientJson) : clientJson)
+          );
+          this.finish(log, started, config);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(clientJson));
+        },
+        {
+          onStart: (waitMs) => {
+            log.phase = "running";
+            log.queueWaitMs = waitMs;
+            this.saveAndNotify(log, config);
+          }
+        }
       );
-      log.queueWaitMs = queued.waitMs;
-      this.saveAndNotify(log, config);
-      const providerResponse = queued.value;
-      log.statusCode = providerResponse.status;
-
-      if ((clientRequest as any).stream && providerResponse.ok) {
-        const proxied = await this.proxyStream(providerResponse, res, clientRoute, providerProtocol, converted);
-        log.status = "ok";
-        log.providerResponseRaw = formatHttpMessage(
-          formatHttpResponseLine(providerResponse.status, providerResponse.statusText),
-          redactedHeaders(headersFromFetchResponse(providerResponse.headers), config),
-          rawSseBodyForLog(proxied.providerBody, config)
-        );
-        log.streamEvents = config.redactSensitive ? (redact(proxied.transformed.streamEvents) as unknown[]) : proxied.transformed.streamEvents;
-        log.providerResponse = config.redactSensitive ? redact(proxied.transformed.providerLog) : proxied.transformed.providerLog;
-        log.clientResponse = config.redactSensitive ? redact(proxied.transformed.clientLog) : proxied.transformed.clientLog;
-        log.anthropicResponse = clientProtocol === "anthropic" ? log.clientResponse : undefined;
-        log.clientResponseRaw = formatHttpMessage(
-          formatHttpResponseLine(200),
-          {
-            "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-cache",
-            connection: "keep-alive"
-          },
-          rawSseBodyForLog(proxied.clientBody, config)
-        );
-        this.finish(log, started, config);
-        return;
-      }
-
-      const text = await providerResponse.text();
-      log.providerResponseRaw = formatHttpMessage(
-        formatHttpResponseLine(providerResponse.status, providerResponse.statusText),
-        redactedHeaders(headersFromFetchResponse(providerResponse.headers), config),
-        rawProviderResponseBodyForLog(text, config)
-      );
-
-      if (!providerResponse.ok) {
-        const errorBody = tryParseJson(text) ?? { message: text };
-        const providerError = providerErrorMessage(errorBody, providerResponse.statusText);
-        const clientErrorBody = errorBodyForProtocol(providerResponse.status, "api_error", providerError, clientProtocol);
-        log.status = "error";
-        log.error = providerError;
-        log.providerResponse = config.redactSensitive ? redact(errorBody) : errorBody;
-        log.clientResponse = config.redactSensitive ? redact(clientErrorBody) : clientErrorBody;
-        log.clientResponseRaw = formatHttpMessage(
-          formatHttpResponseLine(providerResponse.status),
-          { "content-type": "application/json" },
-          JSON.stringify(config.redactSensitive ? redact(clientErrorBody) : clientErrorBody)
-        );
-        this.finish(log, started, config);
-        this.writeErrorBody(res, providerResponse.status, clientErrorBody);
-        return;
-      }
-
-      const providerJson = JSON.parse(text);
-      const clientJson = this.transformJson(providerJson, clientRoute, providerProtocol, converted);
-      log.status = "ok";
-      log.providerResponse = config.redactSensitive ? redact(providerJson) : providerJson;
-      log.clientResponse = config.redactSensitive ? redact(clientJson) : clientJson;
-      log.anthropicResponse = clientProtocol === "anthropic" ? log.clientResponse : undefined;
-      log.clientResponseRaw = formatHttpMessage(
-        formatHttpResponseLine(200),
-        { "content-type": "application/json" },
-        JSON.stringify(config.redactSensitive ? redact(clientJson) : clientJson)
-      );
-      this.finish(log, started, config);
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(clientJson));
     } catch (error) {
       log.status = "error";
       log.error = error instanceof Error ? error.message : String(error);
@@ -676,6 +683,7 @@ export class GatewayServer {
   private finish(log: LogEntry, started: number, config: GatewayConfig): void {
     log.completedAt = new Date().toISOString();
     log.durationMs = Date.now() - started;
+    delete log.phase;
     this.saveAndNotify(log, config);
   }
 

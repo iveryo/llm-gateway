@@ -184,6 +184,137 @@ describe("GatewayServer streaming", () => {
     expect(await response.json()).toMatchObject({ error: { message: "rate limited" } });
     expect(logs.latest()?.status).toBe("error");
   });
+
+  it("holds provider concurrency until a stream response finishes", async () => {
+    let providerRequests = 0;
+    let releaseFirstStream: (() => void) | undefined;
+    const provider = await listen((req, res) => {
+      providerRequests += 1;
+      void readBody(req).then(() => {
+        writeSseHead(res);
+        if (providerRequests === 1) {
+          res.write('data: {"id":"chatcmpl_1","model":"provider-test","choices":[{"delta":{"content":"Hel"}}]}\n\n');
+          void new Promise<void>((resolve) => {
+            releaseFirstStream = resolve;
+          }).then(() => {
+            res.end(
+              'data: {"id":"chatcmpl_1","model":"provider-test","choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}\n\n' +
+                "data: [DONE]\n\n"
+            );
+          });
+          return;
+        }
+        res.end(
+          'data: {"id":"chatcmpl_2","model":"provider-test","choices":[{"delta":{"content":"second"},"finish_reason":"stop"}]}\n\n' +
+            "data: [DONE]\n\n"
+        );
+      });
+    });
+    servers.push(provider.server);
+
+    const logs = new TestLogStore();
+    const gateway = createGateway(provider.url, "openai", logs);
+    await gateway.restart();
+    servers.push((gateway as any).server);
+
+    const first = fetch(`${gatewayUrl(gateway)}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "local-dev-token" },
+      body: JSON.stringify({
+        model: "claude-test",
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: "user", content: "first" }]
+      })
+    });
+    const firstResponse = await first;
+    expect(firstResponse.status).toBe(200);
+    const firstReader = firstResponse.body!.getReader();
+    expect(await readUntil(firstReader, "text_delta")).toContain("Hel");
+
+    const second = fetch(`${gatewayUrl(gateway)}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "local-dev-token" },
+      body: JSON.stringify({
+        model: "claude-test",
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: "user", content: "second" }]
+      })
+    });
+
+    await delay(30);
+    expect(providerRequests).toBe(1);
+
+    releaseFirstStream?.();
+    await readRest(firstReader);
+    const secondResponse = await second;
+    expect(secondResponse.status).toBe(200);
+    await secondResponse.text();
+    expect(providerRequests).toBe(2);
+  });
+
+  it("holds provider concurrency until a non-stream response body finishes", async () => {
+    let providerRequests = 0;
+    let releaseFirstBody: (() => void) | undefined;
+    const provider = await listen((req, res) => {
+      providerRequests += 1;
+      void readBody(req).then(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        if (providerRequests === 1) {
+          res.write('{"id":"chatcmpl_1","model":"provider-test","choices":[{"message":{"role":"assistant","content":"first"},"finish_reason":"stop"}]');
+          void new Promise<void>((resolve) => {
+            releaseFirstBody = resolve;
+          }).then(() => {
+            res.end(',"usage":{"prompt_tokens":1,"completion_tokens":1}}');
+          });
+          return;
+        }
+        res.end(
+          JSON.stringify({
+            id: "chatcmpl_2",
+            model: "provider-test",
+            choices: [{ message: { role: "assistant", content: "second" }, finish_reason: "stop" }]
+          })
+        );
+      });
+    });
+    servers.push(provider.server);
+
+    const logs = new TestLogStore();
+    const gateway = createGateway(provider.url, "openai", logs);
+    await gateway.restart();
+    servers.push((gateway as any).server);
+
+    const first = fetch(`${gatewayUrl(gateway)}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "local-dev-token" },
+      body: JSON.stringify({
+        model: "claude-test",
+        max_tokens: 64,
+        messages: [{ role: "user", content: "first" }]
+      })
+    });
+
+    await waitFor(() => providerRequests === 1);
+    const second = fetch(`${gatewayUrl(gateway)}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "local-dev-token" },
+      body: JSON.stringify({
+        model: "claude-test",
+        max_tokens: 64,
+        messages: [{ role: "user", content: "second" }]
+      })
+    });
+
+    await delay(30);
+    expect(providerRequests).toBe(1);
+
+    releaseFirstBody?.();
+    expect((await first).status).toBe(200);
+    expect((await second).status).toBe(200);
+    expect(providerRequests).toBe(2);
+  });
 });
 
 function createGateway(providerUrl: string, providerProtocol: "openai" | "anthropic", logs: TestLogStore): GatewayServer {
@@ -271,4 +402,16 @@ async function readRest(reader: ReadableStreamDefaultReader<Uint8Array>): Promis
   }
   output += decoder.decode();
   return output;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (condition()) return;
+    await delay(5);
+  }
+  throw new Error("Timed out waiting for condition");
 }

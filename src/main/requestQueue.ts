@@ -3,11 +3,16 @@ export type QueueRunResult<T> = {
   waitMs: number;
 };
 
+export type QueueRunOptions = {
+  onStart?: (waitMs: number) => void;
+};
+
 type QueueTask<T> = {
   enqueuedAt: number;
   resolve: (result: QueueRunResult<T>) => void;
   reject: (error: unknown) => void;
   run: () => Promise<T>;
+  onStart?: (waitMs: number) => void;
 };
 
 export class RequestQueue {
@@ -24,13 +29,14 @@ export class RequestQueue {
     this.drain();
   }
 
-  run<T>(run: () => Promise<T>): Promise<QueueRunResult<T>> {
+  run<T>(run: () => Promise<T>, options: QueueRunOptions = {}): Promise<QueueRunResult<T>> {
     return new Promise<QueueRunResult<T>>((resolve, reject) => {
       this.pending.push({
         enqueuedAt: Date.now(),
         resolve: resolve as (result: QueueRunResult<unknown>) => void,
         reject,
-        run
+        run,
+        onStart: options.onStart
       });
       this.drain();
     });
@@ -41,6 +47,7 @@ export class RequestQueue {
       const task = this.pending.shift()!;
       this.active += 1;
       const waitMs = Date.now() - task.enqueuedAt;
+      task.onStart?.(waitMs);
       void task.run()
         .then((value) => task.resolve({ value, waitMs }))
         .catch(task.reject)

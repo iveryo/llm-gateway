@@ -29,6 +29,7 @@ export type GatewayConfig = {
 };
 
 export type LogStatus = "pending" | "ok" | "error";
+export type LogPhase = "queued" | "running";
 
 export type GatewayRuntimeState = "starting" | "running" | "stopped" | "error";
 
@@ -49,6 +50,7 @@ export type LogEntry = {
   method: string;
   path: string;
   status: LogStatus;
+  phase?: LogPhase;
   statusCode?: number;
   clientProtocol?: LlmProtocol;
   providerProtocol?: LlmProtocol;

@@ -42,6 +42,31 @@ describe("RequestQueue", () => {
     expect(maxActive).toBe(2);
   });
 
+  it("reports when each queued provider call starts", async () => {
+    const queue = new RequestQueue(1);
+    const events: string[] = [];
+
+    const first = queue.run(
+      async () => {
+        events.push("first:run");
+        await delay(20);
+        return "first";
+      },
+      { onStart: () => events.push("first:start") }
+    );
+    const second = queue.run(
+      async () => {
+        events.push("second:run");
+        return "second";
+      },
+      { onStart: () => events.push("second:start") }
+    );
+
+    expect(events).toEqual(["first:start", "first:run"]);
+    await Promise.all([first, second]);
+    expect(events).toEqual(["first:start", "first:run", "second:start", "second:run"]);
+  });
+
   it("does not limit provider calls when concurrency is not configured", async () => {
     const queue = new RequestQueue();
     const maxActive = await runAndTrackMaxActive(queue);

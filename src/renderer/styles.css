@@ -279,7 +279,9 @@ p {
   background: #15803d;
 }
 
-.status.pending {
+.status.pending,
+.status.queued,
+.status.running {
   background: #f59e0b;
 }
 
@@ -555,7 +557,9 @@ p {
   color: #15803d;
 }
 
-.summary .pending {
+.summary .pending,
+.summary .queued,
+.summary .running {
   color: #b45309;
 }
 

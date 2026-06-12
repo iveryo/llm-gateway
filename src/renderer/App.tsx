@@ -164,7 +164,9 @@ const TEXT = {
     status: {
       error: "error",
       ok: "ok",
-      pending: "pending"
+      pending: "pending",
+      queued: "queued",
+      running: "running"
     },
     gatewayRuntime: {
       error: "Error",
@@ -320,7 +322,9 @@ const TEXT = {
     status: {
       error: "错误",
       ok: "成功",
-      pending: "处理中"
+      pending: "处理中",
+      queued: "排队中",
+      running: "处理中"
     },
     gatewayRuntime: {
       error: "错误",
@@ -531,10 +535,10 @@ export function App() {
               className={`logItem ${selectedId === log.id ? "active" : ""}`}
               onClick={() => setSelectedId(log.id)}
             >
-              <span className={`status ${log.status}`}>{log.status}</span>
+              <span className={`status ${logStatusClass(log)}`}>{logStatusText(log, t)}</span>
               <strong>{log.clientModel || log.anthropicModel || t.logs.unknownModel}</strong>
               <small>{new Date(log.startedAt).toLocaleString(language === "zh" ? "zh-CN" : "en-US")}</small>
-              <small>{t.status[log.status]} | {log.statusCode ?? "-"} | {formatDuration(log.durationMs)} | {t.logs.queued} {formatDuration(log.queueWaitMs)} | {log.stream ? t.logs.stream : t.logs.json}</small>
+              <small>{logStatusText(log, t)} | {log.statusCode ?? "-"} | {formatDuration(log.durationMs)} | {t.logs.queued} {formatDuration(log.queueWaitMs)} | {log.stream ? t.logs.stream : t.logs.json}</small>
             </button>
           ))}
         </div>
@@ -774,12 +778,21 @@ function GatewayStatusView({ status, t, language }: { status: GatewayStatus; t: 
   );
 }
 
+function logStatusText(log: LogEntry, t: UiText): string {
+  if (log.status === "pending" && log.phase) return t.status[log.phase];
+  return t.status[log.status];
+}
+
+function logStatusClass(log: LogEntry): string {
+  return log.status === "pending" && log.phase ? log.phase : log.status;
+}
+
 function Summary({ log, t }: { log?: LogEntry; t: UiText }) {
   if (!log) return <section className="summary empty">{t.empty.waiting}</section>;
   const usage = usageTokens(log.providerResponse);
   return (
     <section className="summary compactSummary">
-      <div><label>{t.summary.status}</label><strong className={log.status}>{log.statusCode ?? "-"} {t.status[log.status]}</strong></div>
+      <div><label>{t.summary.status}</label><strong className={logStatusClass(log)}>{log.statusCode ?? "-"} {logStatusText(log, t)}</strong></div>
       <div><label>{t.summary.openaiRequestTokens}</label><strong>{formatTokenCount(usage?.prompt_tokens)}</strong></div>
       <div><label>{t.summary.openaiResponseTokens}</label><strong>{formatTokenCount(usage?.completion_tokens)}</strong></div>
       <div><label>{t.summary.latency}</label><strong>{formatDuration(log.durationMs)}</strong></div>
