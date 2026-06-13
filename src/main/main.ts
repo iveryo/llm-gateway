@@ -4,6 +4,17 @@ import { ConfigStore } from "./config.js";
 import { GatewayServer } from "./gateway.js";
 import { LogStore } from "./store.js";
 
+// Safety net: a failed upstream request or a client disconnecting mid-stream can
+// surface as an emitted socket error (ECONNRESET/EPIPE) or a rejected promise that
+// no try/catch can intercept. Without these handlers Node would turn it into an
+// uncaught exception and kill the whole gateway process. Log and keep running.
+process.on("uncaughtException", (error) => {
+  console.error("[gateway] uncaught exception:", error);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[gateway] unhandled rejection:", reason);
+});
+
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let configStore: ConfigStore;

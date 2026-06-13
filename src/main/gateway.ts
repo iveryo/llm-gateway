@@ -1,6 +1,5 @@
 import { BrowserWindow } from "electron";
 import http, { IncomingMessage, ServerResponse, STATUS_CODES } from "node:http";
-import { once } from "node:events";
 import { GatewayConfig, GatewayRuntimeState, GatewayStatus, LlmProtocol, LogEntry, ProviderConfig } from "../shared/types.js";
 import { ConfigStore } from "./config.js";
 import { LogStore } from "./store.js";
@@ -25,6 +24,13 @@ import { providerChatCompletionsUrl, providerMessagesUrl, providerResponsesUrl }
 import { RequestQueue } from "./requestQueue.js";
 
 const ANTHROPIC_VERSION = "2023-06-01";
+
+class ClientDisconnectedError extends Error {
+  constructor() {
+    super("Client disconnected before the stream completed");
+    this.name = "ClientDisconnectedError";
+  }
+}
 const SUPPORTED_ENDPOINTS =
   "Supported endpoints are GET /v1/models, GET /v1/models/{model_id}, POST /v1/messages, POST /v1/chat/completions, and POST /v1/responses";
 
@@ -154,6 +160,11 @@ export class GatewayServer {
     this.setStatus("starting", config);
     this.configureQueues(config);
     const server = http.createServer((req, res) => {
+      // A client disconnecting mid-stream makes the response/socket emit an "error"
+      // event (ECONNRESET/EPIPE). Without a listener Node escalates it to an uncaught
+      // exception that crashes the process, so absorb it here.
+      res.on("error", () => {});
+      req.on("error", () => {});
       void this.handle(req, res).catch((error) => this.writeError(res, 500, "internal_error", String(error)));
     });
 
@@ -579,10 +590,27 @@ export class GatewayServer {
         transformed: this.transformStream(providerBody, clientRoute, providerProtocol, converted)
       };
     } catch (error) {
-      if (!res.writableEnded) res.end();
+      // Stop pulling from the provider once we can no longer deliver to the client.
+      await reader.cancel().catch(() => undefined);
+      if (!res.writableEnded && !res.destroyed) res.end();
+      if (error instanceof ClientDisconnectedError) {
+        // The client hung up mid-stream. Salvage whatever we already proxied for
+        // logging instead of bubbling this up as a request failure.
+        const providerBody = providerChunks.join("");
+        const clientBody = clientChunks.join("");
+        return {
+          providerBody,
+          clientBody,
+          transformed: this.transformStream(providerBody, clientRoute, providerProtocol, converted)
+        };
+      }
       throw error;
     } finally {
-      reader.releaseLock();
+      try {
+        reader.releaseLock();
+      } catch {
+        // Lock may already be released after cancel(); ignore.
+      }
     }
   }
 
@@ -612,10 +640,40 @@ export class GatewayServer {
   private async writeStreamFrames(res: ServerResponse, frames: string[], clientChunks: string[]): Promise<void> {
     for (const frame of frames) {
       clientChunks.push(frame);
+      // If the client has already gone away there is nothing to write to; stop here
+      // so we don't throw on a destroyed socket.
+      if (res.writableEnded || res.destroyed) {
+        throw new ClientDisconnectedError();
+      }
       if (!res.write(frame)) {
-        await once(res, "drain");
+        await this.waitForDrain(res);
       }
     }
+  }
+
+  private waitForDrain(res: ServerResponse): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        res.off("drain", onDrain);
+        res.off("close", onClose);
+        res.off("error", onError);
+      };
+      const onDrain = () => {
+        cleanup();
+        resolve();
+      };
+      const onClose = () => {
+        cleanup();
+        reject(new ClientDisconnectedError());
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      res.once("drain", onDrain);
+      res.once("close", onClose);
+      res.once("error", onError);
+    });
   }
 
   private async callProvider(config: GatewayConfig, request: PreparedProviderRequest): Promise<Response> {
